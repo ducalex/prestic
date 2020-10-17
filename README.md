@@ -9,7 +9,7 @@ for more details).
 # Usage
 
 ## Installation
-- Install Python 3.5+
+- Install Python 3.6+
 - Install dependencies: `pip install keyring pystray` (optional)
 - Download `prestic.py` and put it somewhere in your PATH
 
@@ -31,7 +31,7 @@ want to identify that password. Then to set a password run the following command
 
 
 # Configuration file
-Configuration is stored in ~/.prestic/config.ini. The file consists of profile blocks. You can use a 
+Configuration is stored in $HOME/.prestic/config.ini. The file consists of profile blocks. You can use a 
 single block or split in multiple blocks through inheritance. For example one profile could contain 
 the repository configuration and then another one inherits from it and adds the backup command.
 

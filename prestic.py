@@ -211,23 +211,21 @@ class PresticProfile:
 
         p_args = {"args": args, "env": {**os.environ, **env}}
 
+        if os.sys.platform == "win32":
+            cpu_priorities = {"idle": 0x0040, "low": 0x4000, "normal": 0x0020, "high": 0x0080}
+            p_args["creationflags"] = 0x08000000 | cpu_priorities.get(self["cpu-priority"], 0)
+
         if capture_output:
             p_args["stdout"] = subprocess.PIPE
             p_args["stderr"] = subprocess.STDOUT
             p_args["universal_newlines"] = True
             p_args["bufsize"] = 1
 
+        # Set before popen to avoid being stuck in a loop if it fails
         self.set_last_run()
 
         proc_handle = subprocess.Popen(**p_args)
 
-        cpu_priorities = {"idle": 15, "low": 5, "normal": 0, "high": -15}
-        io_priorities = {"idle": 3, "low": 2, "normal": 1, "high": 0}
-
-        if self["cpu-priority"] in cpu_priorities:
-            pass
-        if self["io-priority"] in io_priorities:
-            pass
         if self["wait-for-lock"]:
             pass
 
@@ -436,6 +434,7 @@ class PresticService(PresticHandler):
                 def on_click():
                     self.notify(f"{task['name']} will run next")
                     task.next_run = datetime.now()
+
                 return on_click
 
             def tasks_menu():

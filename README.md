@@ -10,12 +10,13 @@ for more details).
 
 ## Installation
 - Install Python 3.6+
-- Install dependencies: `pip install keyring pystray` (optional)
-- Download `prestic.py` and put it somewhere in your PATH
+- Install optional dependencies: `pip install keyring pystray`
+- Download the prestic repository and extract it somewhere permanent
+    - Note: `prestic.py` is standalone and can be put anywhere in your PATH instead
 
 ### Start service on login
-- Windows: Copy `service.bat` to your startup folder
-- Linux: Add a link to `prestic.py --service` to your startup applications
+- Windows: Add a link to `service.bat` to your startup folder
+- Linux: Add a link to `/path/to/prestic.py --service` to your startup applications
 
 ## Command line
 - Run profile-defined command: `prestic.py -p profilename`

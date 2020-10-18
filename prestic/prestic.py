@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """ Prestic is a profile manager and task scheduler for restic """
 
-import argparse
 import os
-import math
 import shlex
-import shutil
 import subprocess
 import time
+from argparse import ArgumentParser
 from configparser import ConfigParser
 from copy import deepcopy
 from datetime import datetime, timedelta
+from math import floor, ceil
 from pathlib import Path
 
 try:
@@ -20,6 +19,11 @@ try:
     import pystray
 except:
     pystray = None
+
+try:
+    import keyring
+except:
+    keyring = None
 
 
 PROG_NAME = "prestic"
@@ -34,6 +38,7 @@ PROG_ICON = (
     b"thg4THOyc5PyLl/Zsyfy4NVT567tv3R9z57d+bEsufz8kGhNMU8sKCy6cWX3lQObdm7evP3CpevHLxWXlMaWCECjpexc+c1bt+/cPb0T6In9+3feu3v3/q0HDyu8KiFWVFU/Wv3w5uOaJ3ee3tt8dNPGp89u1zx/8aC2rrqeHWyHYH1DY1Pzy5uvXt++/+btu2f33z9++eFVU6OIjzsrWAFfCx9La9uDjx8/vXj+/P6dzy++vPz66UU7CwM3KyLx8HS8fPDg4adPH98/efX108MPD752MiMnLrGu7ppXDx8+/P"
     b"rg851XXx9+fXHrRU8BsoKk3r6bXz99/frpy7dnr4HUpw/P+1mRFTAW9JQvffzqy4fv3+6//vDl8dI1P3jQUvCEiWt//vr1++ebN2t+//q5ZYMZet5gnuT/x3/f331H9/39u+/P9snijGJiqCo49DaDkwsQbN95JI4xSYMbLZcETjn1dyoIWE/z+FE+XSAlCT0jzZj5ZqLurFmz4nNbZz+vyWBGl2cQzVs9ewbYbcy9c6YXYMgzsPS/nssBdhljEjO2DM7SPy9DFF0GAMQBYCsctATDAAAAAElFTkSuQmCC"
 )
+PYTHON_EXE = os.sys.executable # basename?
 
 
 class PresticProfile:
@@ -94,7 +99,7 @@ class PresticProfile:
             "global-flags": [],
         }
 
-        self.defined = set(["name"])
+        self.defined = set({"name"})
         self.parents = []
 
         for key in properties:
@@ -117,9 +122,6 @@ class PresticProfile:
         self.properties[key] = value
         self.defined.add(key)
 
-        if key == "password-keyring" and not shutil.which("keyring"):
-            print(f"[warning] keyring command missing, required by profile {self['name']}")
-
     def inherit(self, profile):
         for key in profile.defined:
             if key not in self:
@@ -130,6 +132,7 @@ class PresticProfile:
         if not self["schedule"]:
             return
 
+        # We try to schedule missed tasks (up to 24 hours) if possible
         if not last_run or last_run < (datetime.now() - timedelta(days=1)):
             from_time = datetime.now() + timedelta(minutes=1)
         else:
@@ -185,9 +188,10 @@ class PresticProfile:
         env = {}
 
         if self["password-keyring"]:
-            username = self["password-keyring"]
-            env["RESTIC_PASSWORD_COMMAND"] = f"keyring get {PROG_NAME} '{username}'"
-            # password = keyring.get_password(PROG_NAME, username)
+            cmd = f"\"{PYTHON_EXE}\" -m keyring get {PROG_NAME} \"{self['password-keyring']}\""
+            env["RESTIC_PASSWORD_COMMAND"] = cmd
+            if not keyring:
+                print(f"[warning] keyring module missing, required by profile {self['name']}")
 
         for key, value in self.properties.items():
             if value != None:
@@ -213,7 +217,9 @@ class PresticProfile:
 
         if os.sys.platform == "win32":
             cpu_priorities = {"idle": 0x0040, "low": 0x4000, "normal": 0x0020, "high": 0x0080}
-            p_args["creationflags"] = 0x08000000 | cpu_priorities.get(self["cpu-priority"], 0)
+            p_args["creationflags"] = cpu_priorities.get(self["cpu-priority"], 0)
+            if capture_output:
+                p_args["creationflags"] |= 0x08000000  # CREATE_NO_WINDOW
 
         if capture_output:
             p_args["stdout"] = subprocess.PIPE
@@ -223,6 +229,8 @@ class PresticProfile:
 
         # Set before popen to avoid being stuck in a loop if it fails
         self.set_last_run()
+
+        print(f"[info] running: {' '.join(shlex.quote(s) for s in args)}\n")
 
         proc_handle = subprocess.Popen(**p_args)
 
@@ -289,7 +297,9 @@ class PresticHandler:
 
 
 class PresticService(PresticHandler):
-    """ Run in service mode (task scheduler) and output to files """
+    """Run in service mode (task scheduler) and output to files
+    The service is also responsible for the GUI.
+    """
 
     def save_state(self, section, values):
         if not self._state.has_section(section):
@@ -299,13 +309,16 @@ class PresticService(PresticHandler):
             with self.base_path.joinpath("status.ini").open("w") as fp:
                 self._state.write(fp)
 
-    def set_status(self, status):
+    def set_status(self, status, busy=False):
         if status != self._status:
             print(f"[info] status: {status}")
             self._status = status
             if self._icon:
                 self._icon.visible = True
                 self._icon.title = "Prestic backup manager\n" + (status if status else "idle")
+                icon = self._icons["busy"] if busy else self._icons["norm"]
+                if self._icon.icon is not icon:
+                    self._icon.icon = icon
                 # This can cause issues if the menu is currently open
                 # but there is no way to know if it is...
                 self._icon.update_menu()
@@ -332,19 +345,18 @@ class PresticService(PresticHandler):
             self.save_state(task["name"], {"started": 0, "pid": 0})
 
     def run_task(self, task):
-        self.set_status(f"running task {task['name']}")
+        self.set_status(f"running task {task['name']}", True)
 
         proc = task.run(capture_output=True)
-        cmd_line = " ".join(shlex.quote(s) for s in task.get_command()[1])
         output = []
 
-        self.save_state(task["name"], {"started": datetime.now().timestamp(), "pid": proc.pid})
+        self.save_state(task["name"], {"started": time.time(), "pid": proc.pid})
 
         if self.base_path.is_dir():
-            fn = f"{task['name']}-{datetime.now().strftime('%Y.%m.%d_%H.%M')}.txt"
+            fn = f"{task['name']}-{time.strftime('%Y.%m.%d_%H.%M')}.txt"
             log_fd = self.base_path.joinpath("logs", fn).open("w")
             log_fd.write(f"Repository: {task.get_repository()}\n")
-            log_fd.write(f"Command line: {cmd_line}\n")
+            log_fd.write(f"Command line: {' '.join(shlex.quote(s) for s in proc.args)}\n")
             log_fd.write(f"Date: {datetime.now()}\n\n")
             log_fd.flush()
         else:
@@ -374,7 +386,7 @@ class PresticService(PresticHandler):
         self.set_status(status_txt)
         self.save_state(
             task["name"],
-            {"last_run": datetime.now().timestamp(), "exit_code": ret, "pid": 0},
+            {"last_run": time.time(), "exit_code": ret, "pid": 0},
         )
 
     def run(self, *args):
@@ -402,72 +414,75 @@ class PresticService(PresticHandler):
                                 next_task = task
 
                     if next_task:
-                        sleep_time = max(
-                            0, next_task.next_run.timestamp() - datetime.now().timestamp()
-                        )
+                        sleep_time = max(0, (next_task.next_run - datetime.now()).total_seconds())
                         self.set_status(
                             f"{next_task['name']} will run {time_diff(next_task.next_run)}"
                         )
 
                 except Exception as e:
-                    print("[error] service_loop crashed: " + repr(e))
-                    self.notify(repr(e), "Unhandled exception")
+                    print(f"[error] service_loop crashed: {type(e).__name__} '{e}'")
+                    self.notify(str(e), f"Unhandled exception: {type(e).__name__}")
                     # raise e
 
                 time.sleep(min(sleep_time, 10))
             self.quit()
 
-        if pystray:
-
-            def on_folder_click():
-                os_open_file(self.base_path)
-
-            def on_reload_click():
-                # But what if a task is in progress?
-                self.load_config()
-                self.initialize()
-
-            def on_quit_click():
-                self.quit()
-
-            def on_run_now_click(task):
-                def on_click():
-                    self.notify(f"{task['name']} will run next")
-                    task.next_run = datetime.now()
-
-                return on_click
-
-            def tasks_menu():
-                for task in self.tasks:
-                    next_run = time_diff(task.next_run)
-                    last_run = time_diff(task.last_run)
-
-                    if task.is_pending():
-                        next_run = "now (pending)"
-
-                    yield pystray.MenuItem(
-                        task["name"],
-                        pystray.Menu(
-                            pystray.MenuItem(task["description"], lambda x: x, enabled=False),
-                            pystray.Menu.SEPARATOR,
-                            pystray.MenuItem(f"Next run: {next_run}", lambda x: x, enabled=False),
-                            pystray.MenuItem(f"Last run: {last_run}", lambda x: x, enabled=False),
-                            pystray.Menu.SEPARATOR,
-                            pystray.MenuItem("Run Now", on_run_now_click(task)),
-                        ),
-                    )
-
-            self._icon = pystray.Icon(PROG_NAME, Image.open(BytesIO(b64decode(PROG_ICON))))
-            self._icon.menu = pystray.Menu(
-                pystray.MenuItem("Tasks", pystray.Menu(tasks_menu)),
-                pystray.MenuItem("Open prestic folder", on_folder_click),
-                pystray.MenuItem("Reload config", on_reload_click),
-                pystray.MenuItem("Quit", on_quit_click),
-            )
-            self._icon.run(setup=service_loop)
-        else:
+        if not pystray:
             print("[warning] pystray not installed, gui features won't be available")
             service_loop()
+
+        def on_folder_click():
+            os_open_file(self.base_path)
+
+        def on_reload_click():
+            # But what if a task is in progress?
+            self.load_config()
+            self.initialize()
+
+        def on_quit_click():
+            self.quit()
+
+        def on_run_now_click(task):
+            def on_click():
+                self.notify(f"{task['name']} will run next")
+                task.next_run = datetime.now()
+
+            return on_click
+
+        def tasks_menu():
+            for task in self.tasks:
+                next_run = time_diff(task.next_run)
+                last_run = time_diff(task.last_run)
+
+                if task.is_pending():
+                    next_run = "now (pending)"
+
+                yield pystray.MenuItem(
+                    task["name"],
+                    pystray.Menu(
+                        pystray.MenuItem(task["description"], lambda x: x, enabled=False),
+                        pystray.Menu.SEPARATOR,
+                        pystray.MenuItem(f"Next run: {next_run}", lambda x: x, enabled=False),
+                        pystray.MenuItem(f"Last run: {last_run}", lambda x: x, enabled=False),
+                        pystray.Menu.SEPARATOR,
+                        pystray.MenuItem("Run Now", on_run_now_click(task)),
+                    ),
+                )
+
+        icon = Image.open(BytesIO(b64decode(PROG_ICON))).convert("RGBA")
+        self._icons = {
+            "norm": icon,
+            "busy": Image.alpha_composite(Image.new("RGBA", icon.size, (255, 0, 255, 255)), icon),
+            "fail": Image.alpha_composite(Image.new("RGBA", icon.size, (255, 0, 0, 255)), icon),
+        }
+        self._icon = pystray.Icon(PROG_NAME, icon)
+        self._icon.menu = pystray.Menu(
+            pystray.MenuItem("Tasks", pystray.Menu(tasks_menu)),
+            pystray.MenuItem("Open prestic folder", on_folder_click),
+            pystray.MenuItem("Reload config", on_reload_click),
+            pystray.MenuItem("Quit", on_quit_click),
+        )
+        self._icon.run(setup=service_loop)
 
     def quit(self, rc=0):
         print("[info] shutting down...")
@@ -483,10 +498,12 @@ class PresticCommand(PresticHandler):
     def run(self):
         profile = self.profiles.get(self.profile_name)
         if profile:
-            cmd_line = " ".join(shlex.quote(s) for s in profile.get_command(self.args)[1])
             print(f"[info] profile: {self.profile_name} ({profile['description']})")
-            print(f"[info] running: {cmd_line}\n")
-            exit(profile.run(self.args).wait())
+            try:
+                exit(profile.run(self.args).wait())
+            except OSError as e:
+                print(f"[error] unable to start restic: {e}")
+                exit(-1)
         else:
             print(f"[error] profile {self.profile_name} does not exist")
             print(f"[info] Available profiles:")
@@ -506,39 +523,42 @@ def time_diff(time, from_time=None):
     if not time:
         return "never"
     from_time = from_time if from_time else datetime.now()
-    time_diff = time.timestamp() - from_time.timestamp()
+    time_diff = (time - from_time).total_seconds()
     return "%dd %dh %dm %s" % (
-        math.floor(abs(time_diff) / 86400),
-        math.floor(abs(time_diff) / 3600) % 24,
-        math.floor(abs(time_diff) / 60) % 60,
+        floor(abs(time_diff) / 86400),
+        floor(abs(time_diff) / 3600) % 24,
+        floor(abs(time_diff) / 60) % 60,
         "from now" if time_diff > 0 else "ago",
     )
 
 
 def os_open_file(path):
-    path = str(Path(path))
-    for command in [["xdg-open", path], ["start", path], ["open", path]]:
-        try:
-            if subprocess.run(command, shell=True).returncode == 0:
-                break
-        except:
-            pass
+    if os.sys.platform == "win32":
+        subprocess.run(["start", str(Path(path))], shell=True)
+    elif os.sys.platform == "darwin":
+        subprocess.run(["open", str(Path(path))], shell=True)
+    else:
+        subprocess.run(["xdg-open", str(Path(path))])
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Restic Backup Manager", prog=PROG_NAME)
+def main(gui=False):
+    parser = ArgumentParser(description="(P)restic Backup Manager", prog=PROG_NAME)
     parser.add_argument("-c", "--config", default=PROG_FOLDER, help="config file or directory")
     parser.add_argument("-p", "--profile", default="default", help="profile to use")
     parser.add_argument("--service", const=True, action="store_const", help="start service")
-    parser.add_argument("command", nargs=argparse.REMAINDER, help="restic command to run...")
+    parser.add_argument("command", nargs='...', help="restic command to run...")
     args = parser.parse_args()
 
-    if args.service:
+    if args.service or gui:
         handler = PresticService(args.config, args.profile, args.command)
     else:
         handler = PresticCommand(args.config, args.profile, args.command)
 
     handler.run()
+
+
+def main_gui():
+    main(True)
 
 
 if __name__ == "__main__":

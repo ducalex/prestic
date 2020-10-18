@@ -1,26 +1,31 @@
 # Prestic
 Prestic is a profile manager and task scheduler for [restic](https://restic.net/). It works on all 
-operating systems supported by restic but GUI and keyring functionality may vary by platform 
-(see [keyring](https://pypi.org/project/keyring) and [pystray](https://pypi.org/project/pystray) 
-for more details).
+operating systems supported by restic but GUI and keyring functionality may vary by platform.
 
 ![Screenshot](https://github.com/ducalex/prestic/raw/master/screenshot.png)
 
-# Usage
 
-## Installation
-- Install Python 3.6+
-- Install optional dependencies: `pip install keyring pystray`
-- Download the prestic repository and extract it somewhere permanent
-    - Note: `prestic.py` is standalone and can be put anywhere in your PATH instead
+# Installation
+
+Python 3.6+ and [pip](https://pip.pypa.io/en/stable/installing/) are required. Then:
+- `pip install http://github.com/ducalex/prestic/tarball/master#egg=prestic`
+
+_Note: On Ubuntu you need to [add ~/.local/bin to your path](https://bugs.launchpad.net/ubuntu/+source/bash/+bug/1588562)
+ if needed and run `sudo apt install gir1.2-appindicator3-0.1` for the gui to work._
+
+_Note: If you prefer you can also directly download `prestic.py` and put it somewhere in your PATH 
+ (it is standalone)._
+
 
 ### Start service on login
-- Windows: Add a link to `service.bat` to your startup folder
-- Linux: Add a link to `/path/to/prestic.py --service` to your startup applications
+- Windows: Put a link to `prestic-gui.exe` in your `Startup` folder (run `where prestic-gui` to locate it if needed)
+- Linux: Add command `prestic --service` to your startup applications
 
-## Command line
-- Run profile-defined command: `prestic.py -p profilename`
-- Run any restic command on profile: `prestic.py -p profilename snapshots`
+
+# Usage
+- Run profile-defined command: `prestic -p profilename`
+- Run any restic command on profile: `prestic -p profilename snapshots`
+- Start service: `prestic --service`
 
 ## Keyring
 The keyring allows you to let your operating system store repository passwords encrypted in your 
@@ -130,7 +135,8 @@ inherit = my-repo
 schedule = daily at 12:00
 command = backup
 args =
-    /home/user
+    /home/user/folder1
+    /home/user/folder2
 flags =
     --iexclude="*.lock"
 
@@ -138,5 +144,5 @@ flags =
 # You can also issue manual commands:
 # prestic -p my-backup
 # prestic -p my-repo list snapshots
-# prestic -p my-backup list snapshots
+# prestic -p my-backup list snapshots # this overrides my-backup's command/args/flags
 ````

@@ -44,7 +44,7 @@ the repository configuration and then another one inherits from it and adds the 
 Lists can span multiple lines, as long as they are indented deeper than the first line of the value. 
  
 ````ini
-# default is the profile used when no -p is given
+# default is the profile used when no -p is given (it is optional)
 [default]
 inherit = my-profile # A single inherit can be used as an alias
 

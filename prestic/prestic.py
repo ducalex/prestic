@@ -38,7 +38,7 @@ PROG_ICON = (
     b"thg4THOyc5PyLl/Zsyfy4NVT567tv3R9z57d+bEsufz8kGhNMU8sKCy6cWX3lQObdm7evP3CpevHLxWXlMaWCECjpexc+c1bt+/cPb0T6In9+3feu3v3/q0HDyu8KiFWVFU/Wv3w5uOaJ3ee3tt8dNPGp89u1zx/8aC2rrqeHWyHYH1DY1Pzy5uvXt++/+btu2f33z9++eFVU6OIjzsrWAFfCx9La9uDjx8/vXj+/P6dzy++vPz66UU7CwM3KyLx8HS8fPDg4adPH98/efX108MPD752MiMnLrGu7ppXDx8+/P"
     b"rg851XXx9+fXHrRU8BsoKk3r6bXz99/frpy7dnr4HUpw/P+1mRFTAW9JQvffzqy4fv3+6//vDl8dI1P3jQUvCEiWt//vr1++ebN2t+//q5ZYMZet5gnuT/x3/f331H9/39u+/P9snijGJiqCo49DaDkwsQbN95JI4xSYMbLZcETjn1dyoIWE/z+FE+XSAlCT0jzZj5ZqLurFmz4nNbZz+vyWBGl2cQzVs9ewbYbcy9c6YXYMgzsPS/nssBdhljEjO2DM7SPy9DFF0GAMQBYCsctATDAAAAAElFTkSuQmCC"
 )
-PYTHON_EXE = os.sys.executable # basename?
+PYTHON_EXE = os.sys.executable  # basename?
 
 
 class PresticProfile:
@@ -245,6 +245,7 @@ class PresticHandler:
         self.base_path = Path(base_path)
         self.profile_name = profile_name
         self.args = args
+        self.status = None
         self.running = False
 
         if not (self.base_path.is_file() or self.base_path.suffix == ".ini"):
@@ -289,10 +290,14 @@ class PresticHandler:
                 profile.inherit(parent)
                 profile["inherit"].pop(0)
 
+        self.tasks = [t for t in self.profiles.values() if t.is_runnable()]
+
     def run(self, *args):
+        print("[info] running!")
         self.running = True
 
     def stop(self):
+        print("[info] shutting down...")
         self.running = False
 
 
@@ -310,30 +315,24 @@ class PresticService(PresticHandler):
                 self._state.write(fp)
 
     def set_status(self, status, busy=False):
-        if status != self._status:
+        if status != self.status:
             print(f"[info] status: {status}")
-            self._status = status
-            if self._icon:
-                self._icon.visible = True
-                self._icon.title = "Prestic backup manager\n" + (status if status else "idle")
-                icon = self._icons["busy"] if busy else self._icons["norm"]
-                if self._icon.icon is not icon:
-                    self._icon.icon = icon
+            self.status = status
+            if self.gui:
+                self.gui.title = "Prestic backup manager\n" + (status if status else "idle")
+                icon = self.icons["busy"] if busy else self.icons["norm"]
+                if self.gui.icon is not icon:
+                    self.gui.icon = icon
                 # This can cause issues if the menu is currently open
                 # but there is no way to know if it is...
-                self._icon.update_menu()
+                self.gui.update_menu()
 
     def notify(self, message, title=None):
-        if self._icon:
-            self._icon.visible = True
-            self._icon.notify(message, f"{PROG_NAME}: {title}" if title else PROG_NAME)
+        if self.gui:
+            self.gui.notify(message, f"{PROG_NAME}: {title}" if title else PROG_NAME)
             time.sleep(1)
 
-    def initialize(self):
-        self.save_state("__prestic__", {"pid": os.getpid()})
-
-        self.tasks = [t for t in self.profiles.values() if t.is_runnable()]
-
+    def load_states(self):
         for task in self.tasks:
             try:
                 ts = float(self._state[task["name"]].get("last_run", "0"))
@@ -389,17 +388,68 @@ class PresticService(PresticHandler):
             {"last_run": time.time(), "exit_code": ret, "pid": 0},
         )
 
-    def run(self, *args):
-        self.running = True
-        self._icon = None
-        self._status = None
+    def run_gui(self, service_loop):
+        """ Build GUI callbacks and parameters """
+        icon = Image.open(BytesIO(b64decode(PROG_ICON))).convert("RGBA")
+        self.icons = {
+            "norm": icon,
+            "busy": Image.alpha_composite(Image.new("RGBA", icon.size, (255, 0, 255, 255)), icon),
+            "fail": Image.alpha_composite(Image.new("RGBA", icon.size, (255, 0, 0, 255)), icon),
+        }
+
+        def gui_setup(icon):
+            icon.visible = True
+            service_loop(icon)
+
+        def on_run_now_click(task):
+            def on_click():
+                self.notify(f"{task['name']} will run next")
+                task.next_run = datetime.now()
+
+            return on_click
+
+        def tasks_menu():
+            for task in self.tasks:
+                next_run = time_diff(task.next_run)
+                last_run = time_diff(task.last_run)
+
+                if task.is_pending():
+                    next_run = "now (pending)"
+
+                yield pystray.MenuItem(
+                    task["name"],
+                    pystray.Menu(
+                        pystray.MenuItem(task["description"], lambda: 1, enabled=False),
+                        pystray.Menu.SEPARATOR,
+                        pystray.MenuItem(f"Next run: {next_run}", lambda: 1, enabled=False),
+                        pystray.MenuItem(f"Last run: {last_run}", lambda: 1, enabled=False),
+                        pystray.Menu.SEPARATOR,
+                        pystray.MenuItem("Run Now", on_run_now_click(task)),
+                    ),
+                )
+
+        self.gui = pystray.Icon(
+            name=PROG_NAME,
+            icon=icon,
+            menu=pystray.Menu(
+                pystray.MenuItem("Tasks", pystray.Menu(tasks_menu)),
+                pystray.MenuItem("Open prestic folder", lambda: os_open_file(self.base_path)),
+                pystray.MenuItem("Reload config", lambda: (self.load_config(), self.load_states())),
+                pystray.MenuItem("Quit", lambda: self.quit()),
+            ),
+        )
+        self.gui.run(setup=gui_setup)
+
+    def run(self):
         self._state = ConfigParser()
         self._state.read(self.base_path.joinpath("status.ini"))
-
-        self.initialize()
+        self.gui = None
 
         def service_loop(*args):
+            self.save_state("__prestic__", {"pid": os.getpid()})
+            self.load_states()
             self.set_status("service started")
+            self.running = True
 
             while self.running:
                 try:
@@ -425,70 +475,20 @@ class PresticService(PresticHandler):
                     # raise e
 
                 time.sleep(min(sleep_time, 10))
-            self.quit()
+            self.quit(0)
 
-        if not pystray:
-            print("[warning] pystray not installed, gui features won't be available")
-            service_loop()
+        if pystray:
+            self.run_gui(service_loop)
 
-        def on_folder_click():
-            os_open_file(self.base_path)
-
-        def on_reload_click():
-            # But what if a task is in progress?
-            self.load_config()
-            self.initialize()
-
-        def on_quit_click():
-            self.quit()
-
-        def on_run_now_click(task):
-            def on_click():
-                self.notify(f"{task['name']} will run next")
-                task.next_run = datetime.now()
-
-            return on_click
-
-        def tasks_menu():
-            for task in self.tasks:
-                next_run = time_diff(task.next_run)
-                last_run = time_diff(task.last_run)
-
-                if task.is_pending():
-                    next_run = "now (pending)"
-
-                yield pystray.MenuItem(
-                    task["name"],
-                    pystray.Menu(
-                        pystray.MenuItem(task["description"], lambda x: x, enabled=False),
-                        pystray.Menu.SEPARATOR,
-                        pystray.MenuItem(f"Next run: {next_run}", lambda x: x, enabled=False),
-                        pystray.MenuItem(f"Last run: {last_run}", lambda x: x, enabled=False),
-                        pystray.Menu.SEPARATOR,
-                        pystray.MenuItem("Run Now", on_run_now_click(task)),
-                    ),
-                )
-
-        icon = Image.open(BytesIO(b64decode(PROG_ICON))).convert("RGBA")
-        self._icons = {
-            "norm": icon,
-            "busy": Image.alpha_composite(Image.new("RGBA", icon.size, (255, 0, 255, 255)), icon),
-            "fail": Image.alpha_composite(Image.new("RGBA", icon.size, (255, 0, 0, 255)), icon),
-        }
-        self._icon = pystray.Icon(PROG_NAME, icon)
-        self._icon.menu = pystray.Menu(
-            pystray.MenuItem("Tasks", pystray.Menu(tasks_menu)),
-            pystray.MenuItem("Open prestic folder", on_folder_click),
-            pystray.MenuItem("Reload config", on_reload_click),
-            pystray.MenuItem("Quit", on_quit_click),
-        )
-        self._icon.run(setup=service_loop)
+        print("[warning] pystray not installed, gui features won't be available")
+        service_loop()
 
     def quit(self, rc=0):
         print("[info] shutting down...")
-        if self._icon:
-            self._icon.visible = False
-            # icon.stop()
+        self.running = False
+        if self.gui:
+            self.gui.visible = False
+            # self.gui.stop()
         os._exit(rc)
 
 
@@ -546,7 +546,7 @@ def main(gui=False):
     parser.add_argument("-c", "--config", default=PROG_FOLDER, help="config file or directory")
     parser.add_argument("-p", "--profile", default="default", help="profile to use")
     parser.add_argument("--service", const=True, action="store_const", help="start service")
-    parser.add_argument("command", nargs='...', help="restic command to run...")
+    parser.add_argument("command", nargs="...", help="restic command to run...")
     args = parser.parse_args()
 
     if args.service or gui:
@@ -554,7 +554,10 @@ def main(gui=False):
     else:
         handler = PresticCommand(args.config, args.profile, args.command)
 
-    handler.run()
+    try:
+        handler.run()
+    except KeyboardInterrupt:
+        handler.stop()
 
 
 def main_gui():

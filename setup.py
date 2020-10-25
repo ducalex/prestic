@@ -24,7 +24,7 @@ setuptools.setup(
             "prestic=prestic:main",
         ],
         "gui_scripts": [
-            "prestic-gui=prestic:main_gui",
+            "prestic-gui=prestic:gui",
         ],
     },
 )

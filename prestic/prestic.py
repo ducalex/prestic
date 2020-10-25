@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """ Prestic is a profile manager and task scheduler for restic """
 
+import logging
 import os
 import shlex
 import subprocess
@@ -38,10 +39,9 @@ PROG_ICON = (
     b"thg4THOyc5PyLl/Zsyfy4NVT567tv3R9z57d+bEsufz8kGhNMU8sKCy6cWX3lQObdm7evP3CpevHLxWXlMaWCECjpexc+c1bt+/cPb0T6In9+3feu3v3/q0HDyu8KiFWVFU/Wv3w5uOaJ3ee3tt8dNPGp89u1zx/8aC2rrqeHWyHYH1DY1Pzy5uvXt++/+btu2f33z9++eFVU6OIjzsrWAFfCx9La9uDjx8/vXj+/P6dzy++vPz66UU7CwM3KyLx8HS8fPDg4adPH98/efX108MPD752MiMnLrGu7ppXDx8+/P"
     b"rg851XXx9+fXHrRU8BsoKk3r6bXz99/frpy7dnr4HUpw/P+1mRFTAW9JQvffzqy4fv3+6//vDl8dI1P3jQUvCEiWt//vr1++ebN2t+//q5ZYMZet5gnuT/x3/f331H9/39u+/P9snijGJiqCo49DaDkwsQbN95JI4xSYMbLZcETjn1dyoIWE/z+FE+XSAlCT0jzZj5ZqLurFmz4nNbZz+vyWBGl2cQzVs9ewbYbcy9c6YXYMgzsPS/nssBdhljEjO2DM7SPy9DFF0GAMQBYCsctATDAAAAAElFTkSuQmCC"
 )
-PYTHON_EXE = os.sys.executable  # basename?
 
 
-class PresticProfile:
+class Profile:
     aliases = {
         "repository": "-r",
         "limit-download": "--limit-download",
@@ -188,10 +188,10 @@ class PresticProfile:
         env = {}
 
         if self["password-keyring"]:
-            cmd = f"\"{PYTHON_EXE}\" -m keyring get {PROG_NAME} \"{self['password-keyring']}\""
+            cmd = f"\"{os.sys.executable}\" -m keyring get {PROG_NAME} \"{self['password-keyring']}\""
             env["RESTIC_PASSWORD_COMMAND"] = cmd
             if not keyring:
-                print(f"[warning] keyring module missing, required by profile {self['name']}")
+                logging.warning(f"keyring module missing, required by profile {self['name']}")
 
         for key, value in self.properties.items():
             if value != None:
@@ -210,16 +210,10 @@ class PresticProfile:
 
         return env, args
 
-    def run(self, cmd_args=[], capture_output=False):
+    def run(self, cmd_args=[], capture_output=False, stdout=None, stderr=None):
         env, args = self.get_command(cmd_args)
 
-        p_args = {"args": args, "env": {**os.environ, **env}}
-
-        if os.sys.platform == "win32":
-            cpu_priorities = {"idle": 0x0040, "low": 0x4000, "normal": 0x0020, "high": 0x0080}
-            p_args["creationflags"] = cpu_priorities.get(self["cpu-priority"], 0)
-            if capture_output:
-                p_args["creationflags"] |= 0x08000000  # CREATE_NO_WINDOW
+        p_args = {"args": args, "env": {**os.environ, **env}, "stdout": stdout, "stderr": stderr}
 
         if capture_output:
             p_args["stdout"] = subprocess.PIPE
@@ -227,10 +221,17 @@ class PresticProfile:
             p_args["universal_newlines"] = True
             p_args["bufsize"] = 1
 
+        if os.sys.platform == "win32":
+            cpu_priorities = {"idle": 0x0040, "low": 0x4000, "normal": 0x0020, "high": 0x0080}
+            p_args["creationflags"] = cpu_priorities.get(self["cpu-priority"], 0)
+            # do not create a window/console if we capture ALL output
+            if p_args["stdout"] != None and p_args["stderr"] != None:
+                p_args["creationflags"] |= 0x08000000  # CREATE_NO_WINDOW
+
         # Set before popen to avoid being stuck in a loop if it fails
         self.set_last_run()
 
-        print(f"[info] running: {' '.join(shlex.quote(s) for s in args)}\n")
+        logging.info(f"running: {' '.join(shlex.quote(s) for s in args)}\n")
 
         proc_handle = subprocess.Popen(**p_args)
 
@@ -240,7 +241,7 @@ class PresticProfile:
         return proc_handle
 
 
-class PresticHandler:
+class BaseHandler:
     def __init__(self, base_path, profile_name, args=[]):
         self.base_path = Path(base_path)
         self.profile_name = profile_name
@@ -259,13 +260,13 @@ class PresticHandler:
         config.optionxform = lambda x: str(x) if x.startswith("env.") else x.lower()
 
         if config.read(self.base_path):
-            print(f"[info] profiles loaded from file {self.base_path}")
+            logging.info(f"configuration loaded from file {self.base_path}")
         elif config.read(self.base_path.joinpath("config.ini")):
-            print(f"[info] profiles loaded from folder {self.base_path}")
+            logging.info(f"configuration loaded from folder {self.base_path}")
 
         self.profiles = {
-            "default": PresticProfile("default"),
-            **{k: PresticProfile(k, dict(config[k])) for k in config.sections()},
+            "default": Profile("default"),
+            **{k: Profile(k, dict(config[k])) for k in config.sections()},
         }
 
         inherits = True
@@ -293,15 +294,15 @@ class PresticHandler:
         self.tasks = [t for t in self.profiles.values() if t.is_runnable()]
 
     def run(self, *args):
-        print("[info] running!")
+        logging.info("running!")
         self.running = True
 
     def stop(self):
-        print("[info] shutting down...")
+        logging.info("shutting down...")
         self.running = False
 
 
-class PresticService(PresticHandler):
+class ServiceHandler(BaseHandler):
     """Run in service mode (task scheduler) and output to files
     The service is also responsible for the GUI.
     """
@@ -316,7 +317,7 @@ class PresticService(PresticHandler):
 
     def set_status(self, status, busy=False):
         if status != self.status:
-            print(f"[info] status: {status}")
+            logging.info(f"status: {status}")
             self.status = status
             if self.gui:
                 self.gui.title = "Prestic backup manager\n" + (status if status else "idle")
@@ -340,7 +341,7 @@ class PresticService(PresticHandler):
                     task.set_last_run(datetime.fromtimestamp(ts))
             except:
                 pass
-            print(f"[info]    > {task['name']} will next run {time_diff(task.next_run)}")
+            logging.info(f"    > {task['name']} will next run {time_diff(task.next_run)}")
             self.save_state(task["name"], {"started": 0, "pid": 0})
 
     def run_task(self, task):
@@ -362,7 +363,7 @@ class PresticService(PresticHandler):
             log_fd = None
 
         for line in proc.stdout:
-            print("[restic] " + line.rstrip())
+            logging.debug("[restic] " + line.rstrip())
             output.append(line.rstrip())
             if log_fd:
                 log_fd.write(line)
@@ -470,7 +471,7 @@ class PresticService(PresticHandler):
                         )
 
                 except Exception as e:
-                    print(f"[error] service_loop crashed: {type(e).__name__} '{e}'")
+                    logging.error(f"service_loop crashed: {type(e).__name__} '{e}'")
                     self.notify(str(e), f"Unhandled exception: {type(e).__name__}")
                     # raise e
 
@@ -479,12 +480,12 @@ class PresticService(PresticHandler):
 
         if pystray:
             self.run_gui(service_loop)
-
-        print("[warning] pystray not installed, gui features won't be available")
-        service_loop()
+        else:
+            logging.warning("pystray not installed, gui features won't be available")
+            service_loop()
 
     def quit(self, rc=0):
-        print("[info] shutting down...")
+        logging.info("shutting down...")
         self.running = False
         if self.gui:
             self.gui.visible = False
@@ -492,31 +493,42 @@ class PresticService(PresticHandler):
         os._exit(rc)
 
 
-class PresticCommand(PresticHandler):
+class WebHandler(BaseHandler):
+    """ Run a a web server to browse snapshots
+    When stable this will become part of ServiceHandler
+    """
+
+
+
+class KeyringHandler(BaseHandler):
+    """ Interface to manage keyring entries (basically `keyring` alias)
+    """
+
+
+class CommandHandler(BaseHandler):
     """ Run a single command and output to stdout """
 
     def run(self):
         profile = self.profiles.get(self.profile_name)
         if profile:
-            print(f"[info] profile: {self.profile_name} ({profile['description']})")
+            logging.info(f"profile: {self.profile_name} ({profile['description']})")
             try:
                 exit(profile.run(self.args).wait())
             except OSError as e:
-                print(f"[error] unable to start restic: {e}")
-                exit(-1)
+                logging.error(f"unable to start restic: {e}")
         else:
-            print(f"[error] profile {self.profile_name} does not exist")
-            print(f"[info] Available profiles:")
+            logging.error(f"profile {self.profile_name} does not exist")
+            print(f"\nAvailable profiles:")
             for name, profile in self.profiles.items():
                 if not profile.get_repository():
                     continue
-                print(f"[info]    > {name} ({profile['description']}) [{profile.get_repository()}]")
+                print(f"    > {name} ({profile['description']}) [{profile.get_repository()}]")
                 # if profile.parents:
-                #     print(f"[info]        > inheritance: {profile.parents}")
+                #     print(f"        > inheritance: {profile.parents}")
                 # if profile['command']:
-                #     print(f"[info]        > command: {profile['command']}")
-                # print(f"[info]        > command: {str(profile.get_command())}")
-            exit(-1)
+                #     print(f"        > command: {profile['command']}")
+                # print(f"        > command: {str(profile.get_command())}")
+        exit(-1)
 
 
 def time_diff(time, from_time=None):
@@ -541,7 +553,7 @@ def os_open_file(path):
         subprocess.run(["xdg-open", str(Path(path))])
 
 
-def main(gui=False):
+def main(service=False):
     parser = ArgumentParser(description="(P)restic Backup Manager", prog=PROG_NAME)
     parser.add_argument("-c", "--config", default=PROG_FOLDER, help="config file or directory")
     parser.add_argument("-p", "--profile", default="default", help="profile to use")
@@ -549,10 +561,13 @@ def main(gui=False):
     parser.add_argument("command", nargs="...", help="restic command to run...")
     args = parser.parse_args()
 
-    if args.service or gui:
-        handler = PresticService(args.config, args.profile, args.command)
+    logging.basicConfig(format="[%(levelname)s] %(message)s", level=logging.DEBUG)
+
+    if args.service or service:
+        handler = ServiceHandler(args.config, args.profile, args.command)
     else:
-        handler = PresticCommand(args.config, args.profile, args.command)
+        handler = CommandHandler(args.config, args.profile, args.command)
+
 
     try:
         handler.run()
@@ -560,8 +575,8 @@ def main(gui=False):
         handler.stop()
 
 
-def main_gui():
-    main(True)
+def gui():
+    main(service=True)
 
 
 if __name__ == "__main__":

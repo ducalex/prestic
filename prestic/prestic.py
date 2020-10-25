@@ -4,14 +4,14 @@
 import logging
 import os
 import shlex
-import subprocess
 import time
 from argparse import ArgumentParser
 from configparser import ConfigParser
 from copy import deepcopy
 from datetime import datetime, timedelta
 from math import floor, ceil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from subprocess import Popen, PIPE, STDOUT
 
 try:
     from base64 import b64decode
@@ -84,7 +84,7 @@ class Profile:
     }
 
     def __init__(self, name, properties={}):
-        self.properties = {
+        self._properties = {
             "name": name,
             "description": "no description",
             "inherit": [],
@@ -99,8 +99,8 @@ class Profile:
             "global-flags": [],
         }
 
-        self.defined = set({"name"})
-        self.parents = []
+        self._defined = set({"name"})
+        self._parents = []
 
         for key in properties:
             self[key] = properties[key]
@@ -109,27 +109,30 @@ class Profile:
         self.last_run = None
         self.set_last_run()
 
-    def __contains__(self, key):
-        return self.aliases.get(key, key) in self.defined
+    def __getattr__(self, name):
+        return self[name]
 
     def __getitem__(self, key):
-        return self.properties.get(self.aliases.get(key, key))
+        return self._properties.get(self.aliases.get(key, key))
 
     def __setitem__(self, key, value):
         key = self.aliases.get(key, key)
         if type(self[key]) is list and type(value) is not list:
             value = shlex.split(value)
-        self.properties[key] = value
-        self.defined.add(key)
+        self._properties[key] = value
+        self._defined.add(key)
+
+    def is_defined(self, key):
+        return self.aliases.get(key, key) in self._defined
 
     def inherit(self, profile):
-        for key in profile.defined:
-            if key not in self:
-                self[key] = deepcopy(profile[key])
-        self.parents.append([profile["name"], profile.parents])
+        for key, value in profile._properties.items():
+            if not self.is_defined(key) and profile.is_defined(key):
+                self[key] = deepcopy(value)
+        self._parents.append([profile.name, profile._parents])
 
     def set_last_run(self, last_run=None):
-        if not self["schedule"]:
+        if not self.schedule:
             return
 
         # We try to schedule missed tasks (up to 24 hours) if possible
@@ -145,7 +148,7 @@ class Profile:
         sched_hour = 0
         sched_minute = 0
 
-        for part in self["schedule"].lower().replace(",", " ").split():
+        for part in self.schedule.lower().replace(",", " ").split():
             if part == "monthly":
                 sched_months.update(range(1, 13))
             elif part == "daily":
@@ -174,11 +177,11 @@ class Profile:
         return self.next_run and self.next_run <= datetime.now()
 
     def is_runnable(self):
-        return self.get_repository() and self["command"]
+        return self.get_repository() and self.command
 
     def get_repository(self):
-        if self["repository"]:
-            return self["repository"]
+        if self.repository:
+            return self.repository
         elif self["repository-file"]:
             return "file:" + self["repository-file"]
         return None
@@ -188,12 +191,13 @@ class Profile:
         env = {}
 
         if self["password-keyring"]:
-            cmd = f"\"{os.sys.executable}\" -m keyring get {PROG_NAME} \"{self['password-keyring']}\""
-            env["RESTIC_PASSWORD_COMMAND"] = cmd
+            username = shlex.quote(self["password-keyring"])
+            python = shlex.quote(os.sys.executable)
+            env["RESTIC_PASSWORD_COMMAND"] = f"{python} -m keyring get {PROG_NAME} {username}"
             if not keyring:
-                logging.warning(f"keyring module missing, required by profile {self['name']}")
+                logging.warning(f"keyring module missing, required by profile {self.name}")
 
-        for key, value in self.properties.items():
+        for key, value in self._properties.items():
             if value != None:
                 if key.startswith("env."):
                     env[key[4:]] = str(value)
@@ -203,37 +207,36 @@ class Profile:
         # Ignore default command if any argument was given
         if cmd_args:
             args += cmd_args
-        elif self["command"]:
-            args += self["command"]
-            args += self["args"]
-            args += self["flags"]
+        elif self.command:
+            args += self.command
+            args += self.args
+            args += self.flags
 
         return env, args
 
-    def run(self, cmd_args=[], capture_output=False, stdout=None, stderr=None):
+    def run(self, cmd_args=[], text_output=True, stdout=PIPE, stderr=None):
         env, args = self.get_command(cmd_args)
 
         p_args = {"args": args, "env": {**os.environ, **env}, "stdout": stdout, "stderr": stderr}
 
-        if capture_output:
-            p_args["stdout"] = subprocess.PIPE
-            p_args["stderr"] = subprocess.STDOUT
+        if text_output:
             p_args["universal_newlines"] = True
+            p_args["errors"] = "replace"
             p_args["bufsize"] = 1
 
         if os.sys.platform == "win32":
             cpu_priorities = {"idle": 0x0040, "low": 0x4000, "normal": 0x0020, "high": 0x0080}
             p_args["creationflags"] = cpu_priorities.get(self["cpu-priority"], 0)
             # do not create a window/console if we capture ALL output
-            if p_args["stdout"] != None and p_args["stderr"] != None:
+            if stdout != None or stderr != None:
                 p_args["creationflags"] |= 0x08000000  # CREATE_NO_WINDOW
 
         # Set before popen to avoid being stuck in a loop if it fails
-        self.set_last_run()
+        self.set_last_run(datetime.now())
 
         logging.info(f"running: {' '.join(shlex.quote(s) for s in args)}\n")
 
-        proc_handle = subprocess.Popen(**p_args)
+        proc_handle = Popen(**p_args)
 
         if self["wait-for-lock"]:
             pass
@@ -242,10 +245,8 @@ class Profile:
 
 
 class BaseHandler:
-    def __init__(self, base_path, profile_name, args=[]):
+    def __init__(self, base_path):
         self.base_path = Path(base_path)
-        self.profile_name = profile_name
-        self.args = args
         self.status = None
         self.running = False
 
@@ -283,7 +284,7 @@ class BaseHandler:
 
                 if not parent:
                     exit(f"[error] profile {name} inherits non-existing parent {parent_name}")
-                elif parent_name == profile["name"]:
+                elif parent_name == profile.name:
                     exit(f"[error] profile {name} cannot inherit from itself")
                 elif parent["inherit"]:
                     continue
@@ -293,8 +294,8 @@ class BaseHandler:
 
         self.tasks = [t for t in self.profiles.values() if t.is_runnable()]
 
-    def run(self, *args):
-        logging.info("running!")
+    def run(self, profile=None, args=[]):
+        logging.info(f"running {args} on {profile}!")
         self.running = True
 
     def stop(self):
@@ -336,24 +337,24 @@ class ServiceHandler(BaseHandler):
     def load_states(self):
         for task in self.tasks:
             try:
-                ts = float(self._state[task["name"]].get("last_run", "0"))
+                ts = float(self._state[task.name].get("last_run", "0"))
                 if ts and ts > 0:
                     task.set_last_run(datetime.fromtimestamp(ts))
             except:
                 pass
-            logging.info(f"    > {task['name']} will next run {time_diff(task.next_run)}")
-            self.save_state(task["name"], {"started": 0, "pid": 0})
+            logging.info(f"    > {task.name} will next run {time_diff(task.next_run)}")
+            self.save_state(task.name, {"started": 0, "pid": 0})
 
     def run_task(self, task):
-        self.set_status(f"running task {task['name']}", True)
+        self.set_status(f"running task {task.name}", True)
 
-        proc = task.run(capture_output=True)
+        proc = task.run(stdout=PIPE, stderr=STDOUT)
         output = []
 
-        self.save_state(task["name"], {"started": time.time(), "pid": proc.pid})
+        self.save_state(task.name, {"started": time.time(), "pid": proc.pid})
 
         if self.base_path.is_dir():
-            fn = f"{task['name']}-{time.strftime('%Y.%m.%d_%H.%M')}.txt"
+            fn = f"{task.name}-{time.strftime('%Y.%m.%d_%H.%M')}.txt"
             log_fd = self.base_path.joinpath("logs", fn).open("w")
             log_fd.write(f"Repository: {task.get_repository()}\n")
             log_fd.write(f"Command line: {' '.join(shlex.quote(s) for s in proc.args)}\n")
@@ -376,18 +377,15 @@ class ServiceHandler(BaseHandler):
             log_fd.close()
 
         if ret == 0:
-            status_txt = f"task {task['name']} finished"
-        elif ret == 3 and "backup" in task["command"]:
-            status_txt = f"task {task['name']} finished with some warnings..."
+            status_txt = f"task {task.name} finished"
+        elif ret == 3 and "backup" in task.command:
+            status_txt = f"task {task.name} finished with some warnings..."
         else:
-            status_txt = f"task {task['name']} FAILED! (exit code: {ret})"
+            status_txt = f"task {task.name} FAILED! (exit code: {ret})"
 
         self.notify(("\n".join(output[-4:]))[-220:].strip(), status_txt)
         self.set_status(status_txt)
-        self.save_state(
-            task["name"],
-            {"last_run": time.time(), "exit_code": ret, "pid": 0},
-        )
+        self.save_state(task.name, {"last_run": time.time(), "exit_code": ret, "pid": 0})
 
     def run_gui(self, service_loop):
         """ Build GUI callbacks and parameters """
@@ -404,7 +402,7 @@ class ServiceHandler(BaseHandler):
 
         def on_run_now_click(task):
             def on_click():
-                self.notify(f"{task['name']} will run next")
+                self.notify(f"{task.name} will run next")
                 task.next_run = datetime.now()
 
             return on_click
@@ -418,9 +416,9 @@ class ServiceHandler(BaseHandler):
                     next_run = "now (pending)"
 
                 yield pystray.MenuItem(
-                    task["name"],
+                    task.name,
                     pystray.Menu(
-                        pystray.MenuItem(task["description"], lambda: 1, enabled=False),
+                        pystray.MenuItem(task.description, lambda: 1, enabled=False),
                         pystray.Menu.SEPARATOR,
                         pystray.MenuItem(f"Next run: {next_run}", lambda: 1, enabled=False),
                         pystray.MenuItem(f"Last run: {last_run}", lambda: 1, enabled=False),
@@ -441,7 +439,7 @@ class ServiceHandler(BaseHandler):
         )
         self.gui.run(setup=gui_setup)
 
-    def run(self):
+    def run(self, *args):
         self._state = ConfigParser()
         self._state.read(self.base_path.joinpath("status.ini"))
         self.gui = None
@@ -467,7 +465,7 @@ class ServiceHandler(BaseHandler):
                     if next_task:
                         sleep_time = max(0, (next_task.next_run - datetime.now()).total_seconds())
                         self.set_status(
-                            f"{next_task['name']} will run {time_diff(next_task.next_run)}"
+                            f"{next_task.name} will run {time_diff(next_task.next_run)}"
                         )
 
                 except Exception as e:
@@ -494,39 +492,42 @@ class ServiceHandler(BaseHandler):
 
 
 class WebHandler(BaseHandler):
-    """ Run a a web server to browse snapshots
-    When stable this will become part of ServiceHandler
-    """
+    """ Experimental Web UI Service """
 
+    def run(self, *args):
+        pass
 
 
 class KeyringHandler(BaseHandler):
-    """ Interface to manage keyring entries (basically `keyring` alias)
-    """
+    """ Keyring manager (basically a `keyring` clone) """
+
+    def run(self, *args):
+        pass
 
 
 class CommandHandler(BaseHandler):
     """ Run a single command and output to stdout """
 
-    def run(self):
-        profile = self.profiles.get(self.profile_name)
+    def run(self, profile_name, args=[]):
+        profile = self.profiles.get(profile_name)
         if profile:
-            logging.info(f"profile: {self.profile_name} ({profile['description']})")
+            logging.info(f"profile: {profile.name} ({profile.description})")
             try:
-                exit(profile.run(self.args).wait())
+                proc = profile.run(args, stdout=None, stderr=None)
+                exit(proc.wait())
             except OSError as e:
                 logging.error(f"unable to start restic: {e}")
         else:
-            logging.error(f"profile {self.profile_name} does not exist")
+            logging.error(f"profile {profile_name} does not exist")
             print(f"\nAvailable profiles:")
             for name, profile in self.profiles.items():
                 if not profile.get_repository():
                     continue
-                print(f"    > {name} ({profile['description']}) [{profile.get_repository()}]")
-                # if profile.parents:
-                #     print(f"        > inheritance: {profile.parents}")
-                # if profile['command']:
-                #     print(f"        > command: {profile['command']}")
+                print(f"    > {name} ({profile.description}) [{profile.get_repository()}]")
+                # if profile._parents:
+                #     print(f"        > inheritance: {profile._parents}")
+                # if profile.command:
+                #     print(f"        > command: {profile.command}")
                 # print(f"        > command: {str(profile.get_command())}")
         exit(-1)
 
@@ -546,11 +547,11 @@ def time_diff(time, from_time=None):
 
 def os_open_file(path):
     if os.sys.platform == "win32":
-        subprocess.run(["start", str(Path(path))], shell=True)
+        Popen(["start", str(Path(path))], shell=True).wait()
     elif os.sys.platform == "darwin":
-        subprocess.run(["open", str(Path(path))], shell=True)
+        Popen(["open", str(Path(path))], shell=True).wait()
     else:
-        subprocess.run(["xdg-open", str(Path(path))])
+        Popen(["xdg-open", str(Path(path))]).wait()
 
 
 def main(service=False):
@@ -564,13 +565,12 @@ def main(service=False):
     logging.basicConfig(format="[%(levelname)s] %(message)s", level=logging.DEBUG)
 
     if args.service or service:
-        handler = ServiceHandler(args.config, args.profile, args.command)
+        handler = ServiceHandler(args.config)
     else:
-        handler = CommandHandler(args.config, args.profile, args.command)
-
+        handler = CommandHandler(args.config)
 
     try:
-        handler.run()
+        handler.run(args.profile, args.command)
     except KeyboardInterrupt:
         handler.stop()
 

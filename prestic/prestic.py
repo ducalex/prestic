@@ -243,7 +243,6 @@ class Profile:
 class BaseHandler:
     def __init__(self, base_path):
         self.base_path = Path(base_path)
-        self.status = None
         self.running = False
 
         if not (self.base_path.is_file() or self.base_path.suffix == ".ini"):
@@ -254,18 +253,21 @@ class BaseHandler:
 
     def load_config(self):
         config = ConfigParser()
+        status = ConfigParser()
         config.optionxform = lambda x: str(x) if x.startswith("env.") else x.lower()
 
         if config.read(self.base_path):
             logging.info(f"configuration loaded from file {self.base_path}")
         elif config.read(self.base_path.joinpath("config.ini")):
             logging.info(f"configuration loaded from folder {self.base_path}")
+            status.read(self.base_path.joinpath("status.ini"))
 
         self.profiles = {
             "default": Profile("default"),
             **{k: Profile(k, dict(config[k])) for k in config.sections()},
         }
 
+        # Process profile inheritance
         inherits = True
         while inherits:
             inherits = False
@@ -289,6 +291,25 @@ class BaseHandler:
                 profile["inherit"].pop(0)
 
         self.tasks = [t for t in self.profiles.values() if t.is_runnable()]
+        self.state = status
+
+        # Setup task status
+        for task in self.tasks:
+            try:
+                self.save_state(task.name, {"started": 0, "pid": 0}, False)
+                task.last_run = datetime.fromtimestamp(self.state[task.name].getfloat("last_run"))
+                if task.last_run > datetime.now() - timedelta(hours=24):
+                    task.next_run = task.find_next_run(task.last_run)
+            except:
+                pass
+
+    def save_state(self, section, values, write=True):
+        if not self.state.has_section(section):
+            self.state.add_section(section)
+        self.state[section].update({k: str(v) for k, v in values.items()})
+        if write and self.base_path.is_dir():
+            with self.base_path.joinpath("status.ini").open("w") as fp:
+                self.state.write(fp)
 
     def run(self, profile=None, args=[]):
         logging.info(f"running {args} on {profile}!")
@@ -303,14 +324,6 @@ class ServiceHandler(BaseHandler):
     """Run in service mode (task scheduler) and output to files
     The service is also responsible for the GUI.
     """
-
-    def save_state(self, section, values):
-        if not self._state.has_section(section):
-            self._state.add_section(section)
-        self._state[section].update({k: str(v) for k, v in values.items()})
-        if self.base_path.is_dir():
-            with self.base_path.joinpath("status.ini").open("w") as fp:
-                self._state.write(fp)
 
     def set_status(self, status, busy=False):
         if status != self.status:
@@ -330,34 +343,24 @@ class ServiceHandler(BaseHandler):
             self.gui.notify(message, f"{PROG_NAME}: {title}" if title else PROG_NAME)
             time.sleep(1)
 
-    def load_states(self):
-        for task in self.tasks:
-            try:
-                task.last_run = datetime.fromtimestamp(self._state[task.name].getfloat("last_run"))
-                if task.last_run > datetime.now() - timedelta(hours=24):
-                    self.next_run = self.find_next_run(task.last_run)
-            except:
-                pass
-            logging.info(f"    > {task.name} will next run {time_diff(task.next_run)}")
-            self.save_state(task.name, {"started": 0, "pid": 0})
-
     def run_task(self, task):
         self.set_status(f"running task {task.name}", True)
 
         proc = task.run(stdout=PIPE, stderr=STDOUT)
         output = []
 
-        self.save_state(task.name, {"started": time.time(), "pid": proc.pid})
-
         if self.base_path.is_dir():
-            fn = f"{task.name}-{time.strftime('%Y.%m.%d_%H.%M')}.txt"
-            log_fd = self.base_path.joinpath("logs", fn).open("w")
+            log_file = f"{task.name}-{time.strftime('%Y.%m.%d_%H.%M')}.txt"
+            log_fd = self.base_path.joinpath("logs", log_file).open("w")
             log_fd.write(f"Repository: {task.get_repository()}\n")
             log_fd.write(f"Command line: {' '.join(shlex.quote(s) for s in proc.args)}\n")
             log_fd.write(f"Date: {datetime.now()}\n\n")
             log_fd.flush()
         else:
+            log_file = ""
             log_fd = None
+
+        self.save_state(task.name, {"started": time.time(), "pid": proc.pid, "log_file": log_file})
 
         for line in proc.stdout:
             logging.debug("[restic] " + line.rstrip())
@@ -400,22 +403,26 @@ class ServiceHandler(BaseHandler):
             def on_click():
                 self.notify(f"{task.name} will run next")
                 task.next_run = datetime.now()
+            return on_click
 
+        def on_log_click(task):
+            def on_click():
+                log_file = self.state[task.name].get("log_file", "")
+                if log_file:
+                    os_open_file(self.base_path.joinpath("logs", log_file))
             return on_click
 
         def tasks_menu():
             for task in self.tasks:
-                yield pystray.MenuItem(
-                    task.name,
-                    pystray.Menu(
-                        pystray.MenuItem(task.description, lambda: 1),
-                        pystray.Menu.SEPARATOR,
-                        pystray.MenuItem(f"Next run: {time_diff(task.next_run)}", lambda: 1),
-                        pystray.MenuItem(f"Last run: {time_diff(task.last_run)}", lambda: 1),
-                        pystray.Menu.SEPARATOR,
-                        pystray.MenuItem("Run Now", on_run_now_click(task)),
-                    ),
+                task_menu = pystray.Menu(
+                    pystray.MenuItem(task.description, on_log_click(task)),
+                    pystray.Menu.SEPARATOR,
+                    pystray.MenuItem(f"Next run: {time_diff(task.next_run)}", lambda: 1),
+                    pystray.MenuItem(f"Last run: {time_diff(task.last_run)}", on_log_click(task)),
+                    pystray.Menu.SEPARATOR,
+                    pystray.MenuItem("Run Now", on_run_now_click(task)),
                 )
+                yield pystray.MenuItem(task.name, task_menu)
 
         self.gui = pystray.Icon(
             name=PROG_NAME,
@@ -423,22 +430,23 @@ class ServiceHandler(BaseHandler):
             menu=pystray.Menu(
                 pystray.MenuItem("Tasks", pystray.Menu(tasks_menu)),
                 pystray.MenuItem("Open prestic folder", lambda: os_open_file(self.base_path)),
-                pystray.MenuItem("Reload config", lambda: (self.load_config(), self.load_states())),
+                pystray.MenuItem("Reload config", lambda: (self.load_config())),
                 pystray.MenuItem("Quit", lambda: self.quit()),
             ),
         )
         self.gui.run(setup=gui_setup)
 
     def run(self, *args):
-        self._state = ConfigParser()
-        self._state.read(self.base_path.joinpath("status.ini"))
+        self.status = None
         self.gui = None
 
         def service_loop(*args):
             self.save_state("__prestic__", {"pid": os.getpid()})
-            self.load_states()
             self.set_status("service started")
             self.running = True
+
+            for task in self.tasks:
+                logging.info(f"    > {task.name} will next run {time_diff(task.next_run)}")
 
             while self.running:
                 try:
@@ -527,12 +535,13 @@ def time_diff(time, from_time=None):
         return "never"
     from_time = from_time if from_time else datetime.now()
     time_diff = (time - from_time).total_seconds()
-    return "%dd %dh %dm %s" % (
-        floor(abs(time_diff) / 86400),
-        floor(abs(time_diff) / 3600) % 24,
-        floor(abs(time_diff) / 60) % 60,
-        "from now" if time_diff > 0 else "ago",
-    )
+    days = floor(abs(time_diff) / 86400)
+    hours = floor(abs(time_diff) / 3600) % 24
+    minutes = floor(abs(time_diff) / 60) % 60
+    suffix = 'from now' if time_diff > 0 else 'ago'
+    if abs(time_diff) < 60:
+        return "just now"
+    return f"{days}d {hours}h {minutes}m {suffix}"
 
 
 def os_open_file(path):
@@ -552,7 +561,7 @@ def main(service=False):
     parser.add_argument("command", nargs="...", help="restic command to run...")
     args = parser.parse_args()
 
-    logging.basicConfig(format="[%(levelname)s] %(message)s", level=logging.DEBUG)
+    logging.basicConfig(format="[%(levelname)s] %(message)s", level=logging.INFO)
 
     if args.service or service:
         handler = ServiceHandler(args.config)

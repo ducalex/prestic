@@ -105,9 +105,8 @@ class Profile:
         for key in properties:
             self[key] = properties[key]
 
-        self.next_run = None
         self.last_run = None
-        self.set_last_run()
+        self.next_run = self.find_next_run()
 
     def __getattr__(self, name):
         return self[name]
@@ -131,15 +130,11 @@ class Profile:
                 self[key] = deepcopy(value)
         self._parents.append([profile.name, profile._parents])
 
-    def set_last_run(self, last_run=None):
+    def find_next_run(self, from_time=None):
         if not self.schedule:
-            return
+            return None
 
-        # We try to schedule missed tasks (up to 24 hours) if possible
-        if not last_run or last_run < (datetime.now() - timedelta(days=1)):
-            from_time = datetime.now() + timedelta(minutes=1)
-        else:
-            from_time = last_run
+        from_time = (from_time if from_time else datetime.now()) + timedelta(minutes=1)
 
         weekdays = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
@@ -161,17 +156,18 @@ class Profile:
                     sched_hour = from_time.hour + 1 if time_parts[0] == "*" else int(time_parts[0])
                     sched_minute = int(time_parts[1])
 
-        self.next_run = from_time.replace(hour=sched_hour, minute=sched_minute, second=0)
-        self.last_run = last_run
+        next_run = from_time.replace(hour=sched_hour, minute=sched_minute, second=0)
 
         if sched_months:  # This is wrong but for now good enough
-            self.next_run += timedelta(weeks=4)
+            next_run += timedelta(weeks=4)
 
         if sched_days:
             for i in range(from_time.weekday(), from_time.weekday() + 7):
-                if (i % 7) in sched_days and self.next_run >= from_time:
+                if (i % 7) in sched_days and next_run >= from_time:
                     break
-                self.next_run += timedelta(days=1)
+                next_run += timedelta(days=1)
+
+        return next_run
 
     def is_pending(self):
         return self.next_run and self.next_run <= datetime.now()
@@ -231,8 +227,8 @@ class Profile:
             if stdout != None or stderr != None:
                 p_args["creationflags"] |= 0x08000000  # CREATE_NO_WINDOW
 
-        # Set before popen to avoid being stuck in a loop if it fails
-        self.set_last_run(datetime.now())
+        self.last_run = datetime.now()
+        self.next_run = self.find_next_run(self.last_run)
 
         logging.info(f"running: {' '.join(shlex.quote(s) for s in args)}\n")
 
@@ -337,9 +333,9 @@ class ServiceHandler(BaseHandler):
     def load_states(self):
         for task in self.tasks:
             try:
-                ts = float(self._state[task.name].get("last_run", "0"))
-                if ts and ts > 0:
-                    task.set_last_run(datetime.fromtimestamp(ts))
+                task.last_run = datetime.fromtimestamp(self._state[task.name].getfloat("last_run"))
+                if task.last_run > datetime.now() - timedelta(hours=24):
+                    self.next_run = self.find_next_run(task.last_run)
             except:
                 pass
             logging.info(f"    > {task.name} will next run {time_diff(task.next_run)}")
@@ -409,19 +405,13 @@ class ServiceHandler(BaseHandler):
 
         def tasks_menu():
             for task in self.tasks:
-                next_run = time_diff(task.next_run)
-                last_run = time_diff(task.last_run)
-
-                if task.is_pending():
-                    next_run = "now (pending)"
-
                 yield pystray.MenuItem(
                     task.name,
                     pystray.Menu(
-                        pystray.MenuItem(task.description, lambda: 1, enabled=False),
+                        pystray.MenuItem(task.description, lambda: 1),
                         pystray.Menu.SEPARATOR,
-                        pystray.MenuItem(f"Next run: {next_run}", lambda: 1, enabled=False),
-                        pystray.MenuItem(f"Last run: {last_run}", lambda: 1, enabled=False),
+                        pystray.MenuItem(f"Next run: {time_diff(task.next_run)}", lambda: 1),
+                        pystray.MenuItem(f"Last run: {time_diff(task.last_run)}", lambda: 1),
                         pystray.Menu.SEPARATOR,
                         pystray.MenuItem("Run Now", on_run_now_click(task)),
                     ),

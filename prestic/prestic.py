@@ -4,6 +4,7 @@
 import logging
 import os
 import shlex
+import sys
 import time
 from argparse import ArgumentParser
 from configparser import ConfigParser
@@ -138,6 +139,7 @@ class Profile:
         from_time = (from_time if from_time else datetime.now()) + timedelta(minutes=1)
 
         weekdays = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+        shortcuts = {"daily": range(0, 7), "weekly": {from_time.day}}
 
         sched_days = set()
         sched_months = set()
@@ -147,8 +149,8 @@ class Profile:
         for part in self.schedule.lower().replace(",", " ").split():
             if part == "monthly":
                 sched_months.update(range(1, 13))
-            elif part == "daily":
-                sched_days.update(range(0, 7))
+            elif part in shortcuts:
+                sched_days.update(shortcuts[part])
             elif part[0:3] in weekdays:
                 sched_days.add(weekdays.index(part))
             else:
@@ -189,7 +191,7 @@ class Profile:
 
         if self["password-keyring"]:
             username = shlex.quote(self["password-keyring"])
-            python = shlex.quote(os.sys.executable)
+            python = shlex.quote(sys.executable)
             env["RESTIC_PASSWORD_COMMAND"] = f"{python} -m keyring get {PROG_NAME} {username}"
             if not keyring:
                 logging.warning(f"keyring module missing, required by profile {self.name}")
@@ -221,7 +223,7 @@ class Profile:
             p_args["errors"] = "replace"
             p_args["bufsize"] = 1
 
-        if os.sys.platform == "win32":
+        if sys.platform == "win32":
             cpu_priorities = {"idle": 0x0040, "low": 0x4000, "normal": 0x0020, "high": 0x0080}
             p_args["creationflags"] = cpu_priorities.get(self["cpu-priority"], 0)
             # do not create a window/console if we capture ALL output
@@ -512,7 +514,6 @@ class KeyringHandler(BaseHandler):
             exit(f"Error: {repr(e)}")
 
 
-
 class CommandHandler(BaseHandler):
     """ Run a single command and output to stdout """
 
@@ -521,22 +522,17 @@ class CommandHandler(BaseHandler):
         if profile:
             logging.info(f"profile: {profile.name} ({profile.description})")
             try:
-                proc = profile.run(args)
-                exit(proc.wait())
+                exit(profile.run(args).wait())
             except OSError as e:
                 logging.error(f"unable to start restic: {e}")
         else:
             logging.error(f"profile {profile_name} does not exist")
             print(f"\nAvailable profiles:")
             for name, profile in self.profiles.items():
-                if not profile.get_repository():
-                    continue
-                print(f"    > {name} ({profile.description}) [{profile.get_repository()}]")
-                # if profile._parents:
-                #     print(f"        > inheritance: {profile._parents}")
-                # if profile.command:
-                #     print(f"        > command: {profile.command}")
-                # print(f"        > command: {str(profile.get_command())}")
+                repository = profile.get_repository()
+                if repository:
+                    command = profile.command if profile.command else ""
+                    print(f"    > {name} ({profile.description}) [{repository}] {command}")
         exit(-1)
 
 
@@ -555,26 +551,26 @@ def time_diff(time, from_time=None):
 
 
 def os_open_file(path):
-    if os.sys.platform == "win32":
+    if sys.platform == "win32":
         Popen(["start", str(Path(path))], shell=True).wait()
-    elif os.sys.platform == "darwin":
+    elif sys.platform == "darwin":
         Popen(["open", str(Path(path))], shell=True).wait()
     else:
         Popen(["xdg-open", str(Path(path))]).wait()
 
 
-def main(service=False):
+def main(argv=None):
     parser = ArgumentParser(description="Prestic Backup Manager (for restic)")
     parser.add_argument("-c", "--config", default=PROG_FOLDER, help="config file or directory")
     parser.add_argument("-p", "--profile", default="default", help="profile to use")
     parser.add_argument("--service", const=True, action="store_const", help="start service")
     parser.add_argument("--keyring", const=True, action="store_const", help="keyring management")
     parser.add_argument("command", nargs="...", help="restic command to run...")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     logging.basicConfig(format="[%(levelname)s] %(message)s", level=logging.INFO)
 
-    if args.service or service:
+    if args.service:
         handler = ServiceHandler(args.config)
     elif args.keyring:
         handler = KeyringHandler(args.config)
@@ -588,7 +584,7 @@ def main(service=False):
 
 
 def gui():
-    main(service=True)
+    main([*sys.argv[1:], "--service"])
 
 
 if __name__ == "__main__":

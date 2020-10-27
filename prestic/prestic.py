@@ -9,6 +9,7 @@ from argparse import ArgumentParser
 from configparser import ConfigParser
 from copy import deepcopy
 from datetime import datetime, timedelta
+from getpass import getpass
 from math import floor, ceil
 from pathlib import Path, PurePosixPath
 from subprocess import Popen, PIPE, STDOUT
@@ -210,7 +211,7 @@ class Profile:
 
         return env, args
 
-    def run(self, cmd_args=[], text_output=True, stdout=PIPE, stderr=None):
+    def run(self, cmd_args=[], text_output=True, stdout=None, stderr=None):
         env, args = self.get_command(cmd_args)
 
         p_args = {"args": args, "env": {**os.environ, **env}, "stdout": stdout, "stderr": stderr}
@@ -241,7 +242,7 @@ class Profile:
 
 
 class BaseHandler:
-    def __init__(self, base_path):
+    def __init__(self, base_path=PROG_FOLDER):
         self.base_path = Path(base_path)
         self.running = False
 
@@ -436,7 +437,7 @@ class ServiceHandler(BaseHandler):
         )
         self.gui.run(setup=gui_setup)
 
-    def run(self, *args):
+    def run(self, profile, args=[]):
         self.status = None
         self.gui = None
 
@@ -489,18 +490,27 @@ class ServiceHandler(BaseHandler):
         os._exit(rc)
 
 
-class WebHandler(BaseHandler):
-    """ Experimental Web UI Service """
-
-    def run(self, *args):
-        pass
-
-
 class KeyringHandler(BaseHandler):
     """ Keyring manager (basically a `keyring` clone) """
 
-    def run(self, *args):
-        pass
+    def run(self, profile, args=[]):
+        if len(args) != 2 or args[0] not in ["get", "set", "del"]:
+            exit("Usage: get|set|del username")
+        try:
+            if args[0] == "get":
+                ret = keyring.get_password(PROG_NAME, args[1])
+            elif args[0] == "set":
+                keyring.set_password(PROG_NAME, args[1], getpass())
+                ret = "OK"
+            elif args[0] == "del":
+                keyring.delete_password(PROG_NAME, args[1])
+                ret = "OK"
+            if ret is None:
+                exit("Error: Not found")
+            print(ret, end="")
+        except Exception as e:
+            exit(f"Error: {repr(e)}")
+
 
 
 class CommandHandler(BaseHandler):
@@ -511,7 +521,7 @@ class CommandHandler(BaseHandler):
         if profile:
             logging.info(f"profile: {profile.name} ({profile.description})")
             try:
-                proc = profile.run(args, stdout=None, stderr=None)
+                proc = profile.run(args)
                 exit(proc.wait())
             except OSError as e:
                 logging.error(f"unable to start restic: {e}")
@@ -554,10 +564,11 @@ def os_open_file(path):
 
 
 def main(service=False):
-    parser = ArgumentParser(description="(P)restic Backup Manager", prog=PROG_NAME)
+    parser = ArgumentParser(description="Prestic Backup Manager (for restic)")
     parser.add_argument("-c", "--config", default=PROG_FOLDER, help="config file or directory")
     parser.add_argument("-p", "--profile", default="default", help="profile to use")
     parser.add_argument("--service", const=True, action="store_const", help="start service")
+    parser.add_argument("--keyring", const=True, action="store_const", help="keyring management")
     parser.add_argument("command", nargs="...", help="restic command to run...")
     args = parser.parse_args()
 
@@ -565,6 +576,8 @@ def main(service=False):
 
     if args.service or service:
         handler = ServiceHandler(args.config)
+    elif args.keyring:
+        handler = KeyringHandler(args.config)
     else:
         handler = CommandHandler(args.config)
 

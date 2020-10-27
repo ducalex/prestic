@@ -33,7 +33,7 @@ user profile. This is the best password method if it is available to you.
 
 To use, add `password-keyring = name` to your prestic profile, where `name` can be anything you 
 want to identify that password. Then to set a password run the following command: 
-`keyring set prestic name`.
+`prestic --keyring set name`.
 
 
 # Configuration file

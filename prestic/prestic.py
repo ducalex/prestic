@@ -45,7 +45,7 @@ PROG_ICON = (
 
 class Profile:
     aliases = {
-        "repository": "-r",
+        "repository": "--repo",
         "limit-download": "--limit-download",
         "limit-upload": "--limit-upload",
         "verbose": "--verbose",
@@ -94,9 +94,9 @@ class Profile:
             "args": [],
             "flags": [],
             "wait-for-lock": "0",
-            "cpu-priority": None,
-            "io-priority": None,
-            "schedule": None,
+            "cpu-priority": "",
+            "io-priority": "",
+            "schedule": "",
             "restic-path": "restic",
             "global-flags": [],
         }
@@ -104,11 +104,11 @@ class Profile:
         self._defined = set({"name"})
         self._parents = []
 
+        self.last_run = None
+        self.next_run = None
+
         for key in properties:
             self[key] = properties[key]
-
-        self.last_run = None
-        self.next_run = self.find_next_run()
 
     def __getattr__(self, name):
         return self[name]
@@ -122,6 +122,8 @@ class Profile:
             value = shlex.split(value)
         self._properties[key] = value
         self._defined.add(key)
+        if key == "schedule":
+            self.next_run = self.find_next_run()
 
     def is_defined(self, key):
         return self.aliases.get(key, key) in self._defined
@@ -133,57 +135,40 @@ class Profile:
         self._parents.append([profile.name, profile._parents])
 
     def find_next_run(self, from_time=None):
-        if not self.schedule:
-            return None
-
-        from_time = (from_time if from_time else datetime.now()) + timedelta(minutes=1)
-
         weekdays = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-        shortcuts = {"daily": range(0, 7), "weekly": {from_time.day}}
 
-        sched_days = set()
-        sched_months = set()
-        sched_hour = 0
-        sched_minute = 0
+        from_time = (from_time or datetime.now()) + timedelta(minutes=1)
+        next_run = from_time.replace(hour=0, minute=0, second=0)
 
-        for part in self.schedule.lower().replace(",", " ").split():
-            if part == "monthly":
-                sched_months.update(range(1, 13))
-            elif part in shortcuts:
-                sched_days.update(shortcuts[part])
-            elif part[0:3] in weekdays:
-                sched_days.add(weekdays.index(part))
-            else:
-                time_parts = part.split(":")
-                if len(time_parts) == 2:
-                    sched_hour = from_time.hour + 1 if time_parts[0] == "*" else int(time_parts[0])
-                    sched_minute = int(time_parts[1])
+        m_days = set(range(1, 32))
+        w_days = set()
 
-        next_run = from_time.replace(hour=sched_hour, minute=sched_minute, second=0)
+        if self.schedule:
+            for part in self.schedule.lower().replace(",", " ").split():
+                if part == "monthly":
+                    m_days = {1}
+                elif part == "weekly":
+                    w_days = {0}
+                elif part[0:3] in weekdays:
+                    w_days.add(weekdays.index(part[0:3]))
+                elif len(part.split(":")) == 2:
+                    hour, minute = part.split(":")
+                    hour = from_time.hour + 1 if hour == "*" else int(hour)
+                    next_run = next_run.replace(hour=int(hour), minute=int(minute))
 
-        if sched_months:  # This is wrong but for now good enough
-            next_run += timedelta(weeks=4)
-
-        if sched_days:
-            for i in range(from_time.weekday(), from_time.weekday() + 7):
-                if (i % 7) in sched_days and next_run >= from_time:
-                    break
+            for i in range(from_time.weekday(), from_time.weekday() + 32):
+                if next_run.day in m_days and ((i % 7) in w_days or not w_days):
+                    if next_run >= from_time:
+                        return next_run
                 next_run += timedelta(days=1)
 
-        return next_run
+        return None
 
     def is_pending(self):
         return self.next_run and self.next_run <= datetime.now()
 
     def is_runnable(self):
-        return self.get_repository() and self.command
-
-    def get_repository(self):
-        if self.repository:
-            return self.repository
-        elif self["repository-file"]:
-            return "file:" + self["repository-file"]
-        return None
+        return self.command and (self["repository"] or self["repository-file"])
 
     def get_command(self, cmd_args=[]):
         args = [self["restic-path"]] + self["global-flags"]
@@ -333,7 +318,7 @@ class ServiceHandler(BaseHandler):
             logging.info(f"status: {status}")
             self.status = status
             if self.gui:
-                self.gui.title = "Prestic backup manager\n" + (status if status else "idle")
+                self.gui.title = "Prestic backup manager\n" + (status or "idle")
                 icon = self.icons["busy"] if busy else self.icons["norm"]
                 if self.gui.icon is not icon:
                     self.gui.icon = icon
@@ -355,7 +340,7 @@ class ServiceHandler(BaseHandler):
         if self.base_path.is_dir():
             log_file = f"{task.name}-{time.strftime('%Y.%m.%d_%H.%M')}.txt"
             log_fd = self.base_path.joinpath("logs", log_file).open("w")
-            log_fd.write(f"Repository: {task.get_repository()}\n")
+            log_fd.write(f"Repository: {task['repository'] or task['repository-file']}\n")
             log_fd.write(f"Command line: {' '.join(shlex.quote(s) for s in proc.args)}\n")
             log_fd.write(f"Date: {datetime.now()}\n\n")
             log_fd.flush()
@@ -406,6 +391,7 @@ class ServiceHandler(BaseHandler):
             def on_click():
                 self.notify(f"{task.name} will run next")
                 task.next_run = datetime.now()
+
             return on_click
 
         def on_log_click(task):
@@ -413,6 +399,7 @@ class ServiceHandler(BaseHandler):
                 log_file = self.state[task.name].get("log_file", "")
                 if log_file:
                     os_open_file(self.base_path.joinpath("logs", log_file))
+
             return on_click
 
         def tasks_menu():
@@ -529,7 +516,7 @@ class CommandHandler(BaseHandler):
             logging.error(f"profile {profile_name} does not exist")
             print(f"\nAvailable profiles:")
             for name, profile in self.profiles.items():
-                repository = profile.get_repository()
+                repository = profile["repository"] or profile["repository-file"] or None
                 if repository:
                     command = profile.command if profile.command else ""
                     print(f"    > {name} ({profile.description}) [{repository}] {command}")
@@ -539,12 +526,12 @@ class CommandHandler(BaseHandler):
 def time_diff(time, from_time=None):
     if not time:
         return "never"
-    from_time = from_time if from_time else datetime.now()
+    from_time = from_time or datetime.now()
     time_diff = (time - from_time).total_seconds()
     days = floor(abs(time_diff) / 86400)
     hours = floor(abs(time_diff) / 3600) % 24
     minutes = floor(abs(time_diff) / 60) % 60
-    suffix = 'from now' if time_diff > 0 else 'ago'
+    suffix = "from now" if time_diff > 0 else "ago"
     if abs(time_diff) < 60:
         return "just now"
     return f"{days}d {hours}h {minutes}m {suffix}"

@@ -44,66 +44,71 @@ PROG_ICON = (
 
 
 class Profile:
-    aliases = {
-        "repository": "--repo",
-        "limit-download": "--limit-download",
-        "limit-upload": "--limit-upload",
-        "verbose": "--verbose",
-        "repository-file": "env.RESTIC_REPOSITORY_FILE",
-        "password": "env.RESTIC_PASSWORD",
-        "password-command": "env.RESTIC_PASSWORD_COMMAND",
-        "password-file": "env.RESTIC_PASSWORD_FILE",
-        "cache-dir": "env.RESTIC_CACHE_DIR",
-        "key-hint": "env.RESTIC_KEY_HINT",
-        "progress-fps": "env.RESTIC_PROGRESS_FPS",
-        "aws-access-key-id": "env.AWS_ACCESS_KEY_ID",
-        "aws-secret-access-key": "env.AWS_SECRET_ACCESS_KEY",
-        "aws-default-region": "env.AWS_DEFAULT_REGION",
-        "st-auth": "env.ST_AUTH",
-        "st-user": "env.ST_USER",
-        "st-key": "env.ST_KEY",
-        "os-auth-url": "env.OS_AUTH_URL",
-        "os-region-name": "env.OS_REGION_NAME",
-        "os-username": "env.OS_USERNAME",
-        "os-password": "env.OS_PASSWORD",
-        "os-tenant-id": "env.OS_TENANT_ID",
-        "os-tenant-name": "env.OS_TENANT_NAME",
-        "os-user-domain-name": "env.OS_USER_DOMAIN_NAME",
-        "os-project-name": "env.OS_PROJECT_NAME",
-        "os-project-domain-name": "env.OS_PROJECT_DOMAIN_NAME",
-        "os-application-credential-id": "env.OS_APPLICATION_CREDENTIAL_ID",
-        "os-application-credential-name": "env.OS_APPLICATION_CREDENTIAL_NAME",
-        "os-application-credential-secret": "env.OS_APPLICATION_CREDENTIAL_SECRET",
-        "os-storage-url": "env.OS_STORAGE_URL",
-        "os-auth-token": "env.OS_AUTH_TOKEN",
-        "b2-account-id": "env.B2_ACCOUNT_ID",
-        "b2-account-key": "env.B2_ACCOUNT_KEY",
-        "azure-account-name": "env.AZURE_ACCOUNT_NAME",
-        "azure-account-key": "env.AZURE_ACCOUNT_KEY",
-        "google-project-id": "env.GOOGLE_PROJECT_ID",
-        "google-application-credentials": "env.GOOGLE_APPLICATION_CREDENTIALS",
-        "rclone-bwlimit": "env.RCLONE_BWLIMIT",
-    }
+    _options = [
+        # (key, datatype, remap, default)
+        ("description", "str", None, "no description"),
+        ("restic-path", "str", None, "restic"),
+        ("inherit", "list", None, []),
+        ("command", "list", None, []),
+        ("args", "list", None, []),
+        ("flags", "list", None, []),
+        ("wait-for-lock", "str", None, None),
+        ("cpu-priority", "str", None, None),
+        ("io-priority", "str", None, None),
+        ("schedule", "str", None, None),
+        ("global-flags", "list", None, []),
+        ("repository", "str", "flag.repo", None),
+        ("limit-download", "str", "flag.limit-download", None),
+        ("limit-upload", "str", "flag.limit-upload", None),
+        ("verbose", "str", "flag.verbose", None),
+        ("no-cache", "bool", "flag.no-cache", None),
+        ("no-lock", "bool", "flag.no-lock", None),
+        ("quiet", "bool", "flag.quiet", None),
+        ("json", "bool", "flag.json", None),
+        ("option", "list", "flag.option", None),
+        ("repository-file", "str", "env.RESTIC_REPOSITORY_FILE", None),
+        ("password", "str", "env.RESTIC_PASSWORD", None),
+        ("password-command", "str", "env.RESTIC_PASSWORD_COMMAND", None),
+        ("password-file", "str", "env.RESTIC_PASSWORD_FILE", None),
+        ("cache-dir", "str", "env.RESTIC_CACHE_DIR", None),
+        ("key-hint", "str", "env.RESTIC_KEY_HINT", None),
+        ("progress-fps", "str", "env.RESTIC_PROGRESS_FPS", None),
+        ("aws-access-key-id", "str", "env.AWS_ACCESS_KEY_ID", None),
+        ("aws-secret-access-key", "str", "env.AWS_SECRET_ACCESS_KEY", None),
+        ("aws-default-region", "str", "env.AWS_DEFAULT_REGION", None),
+        ("st-auth", "str", "env.ST_AUTH", None),
+        ("st-user", "str", "env.ST_USER", None),
+        ("st-key", "str", "env.ST_KEY", None),
+        ("os-auth-url", "str", "env.OS_AUTH_URL", None),
+        ("os-region-name", "str", "env.OS_REGION_NAME", None),
+        ("os-username", "str", "env.OS_USERNAME", None),
+        ("os-password", "str", "env.OS_PASSWORD", None),
+        ("os-tenant-id", "str", "env.OS_TENANT_ID", None),
+        ("os-tenant-name", "str", "env.OS_TENANT_NAME", None),
+        ("os-user-domain-name", "str", "env.OS_USER_DOMAIN_NAME", None),
+        ("os-project-name", "str", "env.OS_PROJECT_NAME", None),
+        ("os-project-domain-name", "str", "env.OS_PROJECT_DOMAIN_NAME", None),
+        ("os-application-credential-id", "str", "env.OS_APPLICATION_CREDENTIAL_ID", None),
+        ("os-application-credential-name", "str", "env.OS_APPLICATION_CREDENTIAL_NAME", None),
+        ("os-application-credential-secret", "str", "env.OS_APPLICATION_CREDENTIAL_SECRET", None),
+        ("os-storage-url", "str", "env.OS_STORAGE_URL", None),
+        ("os-auth-token", "str", "env.OS_AUTH_TOKEN", None),
+        ("b2-account-id", "str", "env.B2_ACCOUNT_ID", None),
+        ("b2-account-key", "str", "env.B2_ACCOUNT_KEY", None),
+        ("azure-account-name", "str", "env.AZURE_ACCOUNT_NAME", None),
+        ("azure-account-key", "str", "env.AZURE_ACCOUNT_KEY", None),
+        ("google-project-id", "str", "env.GOOGLE_PROJECT_ID", None),
+        ("google-application-credentials", "str", "env.GOOGLE_APPLICATION_CREDENTIALS", None),
+        ("rclone-bwlimit", "str", "env.RCLONE_BWLIMIT", None),
+    ]
+    # Break down _options for easier access
+    _keymap = {key: remap or key for key, datatype, remap, default in _options}
+    _types = {remap or key: datatype for key, datatype, remap, default in _options}
+    _defaults = {remap or key: default for key, datatype, remap, default in _options}
 
     def __init__(self, name, properties={}):
-        self._properties = {
-            "name": name,
-            "description": "no description",
-            "inherit": [],
-            "command": [],
-            "args": [],
-            "flags": [],
-            "wait-for-lock": "0",
-            "cpu-priority": "",
-            "io-priority": "",
-            "schedule": "",
-            "restic-path": "restic",
-            "global-flags": [],
-        }
-
-        self._defined = set({"name"})
+        self._properties = {"name": name}
         self._parents = []
-
         self.last_run = None
         self.next_run = None
 
@@ -114,19 +119,23 @@ class Profile:
         return self[name]
 
     def __getitem__(self, key):
-        return self._properties.get(self.aliases.get(key, key))
+        key = self._keymap.get(key, key)
+        return self._properties.get(key, self._defaults.get(key))
 
     def __setitem__(self, key, value):
-        key = self.aliases.get(key, key)
-        if type(self[key]) is list and type(value) is not list:
-            value = shlex.split(value)
-        self._properties[key] = value
-        self._defined.add(key)
+        key = self._keymap.get(key, key)
+        datatype = self._types.get(key)
+        if datatype == "list":
+            self._properties[key] = shlex.split(value) if type(value) is str else list(value)
+        elif datatype == "bool":
+            self._properties[key] = value in [True, "true", "1"]
+        else:  # if datatype == "str":
+            self._properties[key] = str(value)
         if key == "schedule":
             self.next_run = self.find_next_run()
 
     def is_defined(self, key):
-        return self.aliases.get(key, key) in self._defined
+        return self._keymap.get(key, key) in self._properties
 
     def inherit(self, profile):
         for key, value in profile._properties.items():
@@ -135,15 +144,15 @@ class Profile:
         self._parents.append([profile.name, profile._parents])
 
     def find_next_run(self, from_time=None):
-        weekdays = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-
-        from_time = (from_time or datetime.now()) + timedelta(minutes=1)
-        next_run = from_time.replace(hour=0, minute=0, second=0)
-
-        m_days = set(range(1, 32))
-        w_days = set()
-
         if self.schedule:
+            weekdays = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+            from_time = (from_time or datetime.now()) + timedelta(minutes=1)
+            next_run = from_time.replace(hour=0, minute=0, second=0)
+
+            m_days = set(range(1, 32))
+            w_days = set()
+
             for part in self.schedule.lower().replace(",", " ").split():
                 if part == "monthly":
                     m_days = {1}
@@ -181,12 +190,17 @@ class Profile:
             if not keyring:
                 logging.warning(f"keyring module missing, required by profile {self.name}")
 
-        for key, value in self._properties.items():
-            if value != None:
-                if key.startswith("env."):
-                    env[key[4:]] = str(value)
-                elif key.startswith("-"):
-                    args += [key, str(value)]
+        for key in self._properties:  # and defaults?
+            if key.startswith("env."):
+                env[key[4:]] = self[key]
+            elif key.startswith("flag."):
+                if type(self[key]) is bool and self[key]:
+                    args += ["--" + key[5:]]
+                elif type(self[key]) is list:
+                    for value in self[key]:
+                        args += ["--" + key[5:], value]
+                elif type(self[key]) is str:
+                    args += ["--" + key[5:], self[key]]
 
         # Ignore default command if any argument was given
         if cmd_args:

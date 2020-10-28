@@ -53,25 +53,18 @@ inherit = my-profile # A single inherit can be used as an alias
 description =
 # (list) inherit options from other profiles
 inherit =
-# (string|list) default restic command to execute (if none provided):
-command =
-# (list) restic args for default command:
-args =
-# (list) restic flags for default command:
-flags =
 # (string) Run this profile periodically (will do nothing if command not set)
 # Format is: `daily at 23:59` or `monthly at 23:59` or `mon,tue,wed at 23:59`. Hourly is also possible: `daily at *:30`
 schedule =
-# (int) Time to wait and retry if the repository is locked (seconds)
-wait-for-lock =
 # (string) sets cpu priority (idle, low, normal, high)
 cpu-priority =
 # (string) sets disk io priority (idle, low, normal, high)
 io-priority =
-# (int) limits downloads to a maximum rate in KiB/s.
-limit-download =
-# (int) limits uploads to a maximum rate in KiB/s.
-limit-upload =
+# (int) Time to wait and retry if the repository is locked (seconds)
+wait-for-lock =
+# (string) path to restic executable:
+restic-path = restic
+
 # (string) repository uri:
 repository = sftp:user@domain:folder
 # (string) repository password (plain text)
@@ -84,12 +77,29 @@ password-command =
 password-keyring =
 # (string) ID of key to try decrypting first, before other keys
 key-hint =
+# (int) limits downloads to a maximum rate in KiB/s.
+limit-download =
+# (int) limits uploads to a maximum rate in KiB/s.
+limit-upload =
+# (string|list) default restic command to execute (if none provided):
+command =
+# (list) restic args for default command:
+args =
+# (list) restic flags for default command:
+flags =
 # (int) be verbose (specify level)
 verbose = 2
-# (list) Global flags applied before the restic command:
+# (string) set the cache directory
+cache-dir = 
+# (bool) do not use the local cache
+no-cache = false
+# (bool) do not lock the repo
+no-lock = false
+# (bool) json output
+json = false
+# (list) Other flags applied before the restic command:
 global-flags =
-# (string) path to restic executable:
-restic-path = restic
+
 # (string) the following environment variables are supported:
 aws-access-key-id =
 aws-secret-access-key =

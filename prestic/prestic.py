@@ -11,13 +11,13 @@ from configparser import ConfigParser
 from copy import deepcopy
 from datetime import datetime, timedelta
 from getpass import getpass
+from io import StringIO, BytesIO
 from math import floor, ceil
 from pathlib import Path, PurePosixPath
 from subprocess import Popen, PIPE, STDOUT
 
 try:
     from base64 import b64decode
-    from io import BytesIO
     from PIL import Image
     import pystray
 except:
@@ -346,36 +346,48 @@ class ServiceHandler(BaseHandler):
             time.sleep(1)
 
     def run_task(self, task):
-        self.set_status(f"running task {task.name}", True)
+        def try_run(cmd_args=[]):
+            proc = task.run(cmd_args, stdout=PIPE, stderr=STDOUT)
+            output = []
 
-        proc = task.run(stdout=PIPE, stderr=STDOUT)
-        output = []
+            self.save_state(task.name, {"pid": proc.pid})
 
-        if self.base_path.is_dir():
-            log_file = f"{task.name}-{time.strftime('%Y.%m.%d_%H.%M')}.txt"
-            log_fd = self.base_path.joinpath("logs", log_file).open("w")
             log_fd.write(f"Repository: {task['repository'] or task['repository-file']}\n")
             log_fd.write(f"Command line: {' '.join(shlex.quote(s) for s in proc.args)}\n")
             log_fd.write(f"Date: {datetime.now()}\n\n")
             log_fd.flush()
-        else:
-            log_file = ""
-            log_fd = None
 
-        self.save_state(task.name, {"started": time.time(), "pid": proc.pid, "log_file": log_file})
-
-        for line in proc.stdout:
-            logging.debug("[restic] " + line.rstrip())
-            output.append(line.rstrip())
-            if log_fd:
+            for line in proc.stdout:
+                logging.debug("[restic] " + line.rstrip())
+                output.append(line.rstrip())
                 log_fd.write(line)
                 log_fd.flush()
 
-        ret = proc.wait()
+            ret = proc.wait()
 
-        if log_fd:
-            log_fd.write(f"\nProcess exit code: {ret}")
-            log_fd.close()
+            log_fd.write(f"\nProcess exit code: {ret}\n")
+
+            return output, ret
+
+        self.set_status(f"running task {task.name}", True)
+
+        if self.base_path.is_dir():
+            log_file = f"{task.name}-{time.strftime('%Y.%m.%d_%H.%M')}.txt"
+            log_fd = self.base_path.joinpath("logs", log_file).open("w")
+        else:
+            log_file = ""
+            log_fd = StringIO()
+
+        self.save_state(task.name, {"started": time.time(), "log_file": log_file})
+
+        output, ret = try_run()
+
+        # This naive method could be a problem, we should check the lock time ourselves
+        # see https://github.com/restic/restic/pull/2391
+        if ret == 1 and "remove stale locks" in output[-1]:
+            logging.warning("task failed because of a stale lock. attempting unlock...")
+            if try_run(["unlock"])[1] == 0:
+                output, ret = try_run()
 
         if ret == 0:
             status_txt = f"task {task.name} finished"
@@ -384,9 +396,11 @@ class ServiceHandler(BaseHandler):
         else:
             status_txt = f"task {task.name} FAILED! (exit code: {ret})"
 
+        log_fd.close()
+
+        self.save_state(task.name, {"last_run": time.time(), "exit_code": ret, "pid": 0})
         self.notify(("\n".join(output[-4:]))[-220:].strip(), status_txt)
         self.set_status(status_txt)
-        self.save_state(task.name, {"last_run": time.time(), "exit_code": ret, "pid": 0})
 
     def run_gui(self, service_loop):
         """ Build GUI callbacks and parameters """

@@ -41,6 +41,7 @@ PROG_ICON = (
     b"thg4THOyc5PyLl/Zsyfy4NVT567tv3R9z57d+bEsufz8kGhNMU8sKCy6cWX3lQObdm7evP3CpevHLxWXlMaWCECjpexc+c1bt+/cPb0T6In9+3feu3v3/q0HDyu8KiFWVFU/Wv3w5uOaJ3ee3tt8dNPGp89u1zx/8aC2rrqeHWyHYH1DY1Pzy5uvXt++/+btu2f33z9++eFVU6OIjzsrWAFfCx9La9uDjx8/vXj+/P6dzy++vPz66UU7CwM3KyLx8HS8fPDg4adPH98/efX108MPD752MiMnLrGu7ppXDx8+/P"
     b"rg851XXx9+fXHrRU8BsoKk3r6bXz99/frpy7dnr4HUpw/P+1mRFTAW9JQvffzqy4fv3+6//vDl8dI1P3jQUvCEiWt//vr1++ebN2t+//q5ZYMZet5gnuT/x3/f331H9/39u+/P9snijGJiqCo49DaDkwsQbN95JI4xSYMbLZcETjn1dyoIWE/z+FE+XSAlCT0jzZj5ZqLurFmz4nNbZz+vyWBGl2cQzVs9ewbYbcy9c6YXYMgzsPS/nssBdhljEjO2DM7SPy9DFF0GAMQBYCsctATDAAAAAElFTkSuQmCC"
 )
+PROG_BUILD = "$Format:%h$"
 
 
 class Profile:
@@ -173,6 +174,11 @@ class Profile:
 
         return None
 
+    def set_last_run(self, last_run=None, update_next=True):
+        self.last_run = last_run or datetime.now()
+        if update_next:
+            self.next_run = self.find_next_run(self.last_run)
+
     def is_pending(self):
         return self.next_run and self.next_run <= datetime.now()
 
@@ -230,16 +236,10 @@ class Profile:
                 p_args["creationflags"] |= 0x08000000  # CREATE_NO_WINDOW
 
         self.last_run = datetime.now()
-        self.next_run = self.find_next_run(self.last_run)
+        self.next_run = None # Disable scheduling while running
 
         logging.info(f"running: {' '.join(shlex.quote(s) for s in args)}\n")
-
-        proc_handle = Popen(**p_args)
-
-        if self["wait-for-lock"]:
-            pass
-
-        return proc_handle
+        return Popen(**p_args)
 
 
 class BaseHandler:
@@ -299,9 +299,8 @@ class BaseHandler:
         for task in self.tasks:
             try:
                 self.save_state(task.name, {"started": 0, "pid": 0}, False)
-                task.last_run = datetime.fromtimestamp(self.state[task.name].getfloat("last_run"))
-                if task.last_run > datetime.now() - timedelta(hours=24):
-                    task.next_run = task.find_next_run(task.last_run)
+                last_run = datetime.fromtimestamp(self.state[task.name].getfloat("last_run"))
+                task.set_last_run(last_run, last_run > datetime.now() - timedelta(hours=24))
             except:
                 pass
 
@@ -346,26 +345,29 @@ class ServiceHandler(BaseHandler):
             time.sleep(1)
 
     def run_task(self, task):
+        def task_log(lines):
+            for line in lines.splitlines():
+                logging.info(f"[task_log] {line}")
+                log_fd.write(f"[{datetime.now()}] {line}\n")
+                log_fd.flush()
+
         def try_run(cmd_args=[]):
             proc = task.run(cmd_args, stdout=PIPE, stderr=STDOUT)
             output = []
 
             self.save_state(task.name, {"pid": proc.pid})
 
-            log_fd.write(f"Repository: {task['repository'] or task['repository-file']}\n")
-            log_fd.write(f"Command line: {' '.join(shlex.quote(s) for s in proc.args)}\n")
-            log_fd.write(f"Date: {datetime.now()}\n\n")
-            log_fd.flush()
+            task_log(f"Repository: {task['repository'] or task['repository-file']}")
+            task_log(f"Command line: {' '.join(shlex.quote(s) for s in proc.args)}")
+            task_log(f"Restic output:\n ")
 
             for line in proc.stdout:
-                logging.debug("[restic] " + line.rstrip())
                 output.append(line.rstrip())
-                log_fd.write(line)
-                log_fd.flush()
+                task_log(line.rstrip())
 
             ret = proc.wait()
 
-            log_fd.write(f"\nProcess exit code: {ret}\n")
+            task_log(f" \nRestic exit code: {ret}\n ")
 
             return output, ret
 
@@ -396,6 +398,7 @@ class ServiceHandler(BaseHandler):
         else:
             status_txt = f"task {task.name} FAILED! (exit code: {ret})"
 
+        task.set_last_run()
         log_fd.close()
 
         self.save_state(task.name, {"last_run": time.time(), "exit_code": ret, "pid": 0})

@@ -63,8 +63,13 @@ class PresticRequestHandler(BaseHTTPRequestHandler):
             """ list profiles """
             table = []
             for p in profiles.values():
-                actions = f"<a href='/{p['name']}'>snapshots</a> | ..."
-                table.append([str(p["name"]), str(p["description"]), str(p["repository"]), actions])
+                if p["repository"] or p["repository-file"]:
+                    table.append([
+                        p["name"],
+                        p["description"],
+                        p["repository"],
+                        f"<a href='/{p['name']}'>snapshots</a> | ..."
+                    ])
             self.do_respond(200, gen_table(table, ["Name", "Description", "Repository", "Action"]))
 
         elif not profile:
@@ -140,8 +145,8 @@ class WebHandler(BaseHandler):
 
     def run(self, *args):
         mimetypes.init()
-        logging.info("Server address: http://127.0.0.1:8000")
-        self.server = TCPServer(("127.0.0.1", 8000), PresticRequestHandler)
+        logging.info("Server address: http://127.0.0.1:8728")
+        self.server = TCPServer(("127.0.0.1", 8728), PresticRequestHandler)
         self.server.serve_forever()
 
     def stop(self):

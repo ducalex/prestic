@@ -470,10 +470,9 @@ class ServiceHandler(BaseHandler):
                 logging.info(f"    > {task.name} will next run {time_diff(task.next_run)}")
 
             while self.running:
+                next_task = None
+                sleep_time = 60
                 try:
-                    next_task = None
-                    sleep_time = 60
-
                     for task in self.tasks:
                         if task.next_run:
                             if task.is_pending():  # or 'backup' in task['command']:
@@ -519,15 +518,15 @@ class KeyringHandler(BaseHandler):
         try:
             if args[0] == "get":
                 ret = keyring.get_password(PROG_NAME, args[1])
+                if ret is None:
+                    exit("Error: Not found")
+                print(ret, end="")
             elif args[0] == "set":
                 keyring.set_password(PROG_NAME, args[1], getpass())
-                ret = "OK"
+                print("OK")
             elif args[0] == "del":
                 keyring.delete_password(PROG_NAME, args[1])
-                ret = "OK"
-            if ret is None:
-                exit("Error: Not found")
-            print(ret, end="")
+                print("OK")
         except Exception as e:
             exit(f"Error: {repr(e)}")
 

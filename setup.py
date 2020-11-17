@@ -22,6 +22,7 @@ setuptools.setup(
     entry_points={
         "console_scripts": [
             "prestic=prestic:main",
+            "prestic-web=prestic:start_webui",
         ],
         "gui_scripts": [
             "prestic-gui=prestic:gui",

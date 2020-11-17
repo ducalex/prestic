@@ -174,10 +174,9 @@ class Profile:
 
         return None
 
-    def set_last_run(self, last_run=None, update_next=True):
+    def set_last_run(self, last_run=None):
         self.last_run = last_run or datetime.now()
-        if update_next:
-            self.next_run = self.find_next_run(self.last_run)
+        self.next_run = self.find_next_run(self.last_run)
 
     def is_pending(self):
         return self.next_run and self.next_run <= datetime.now()
@@ -236,7 +235,7 @@ class Profile:
                 p_args["creationflags"] |= 0x08000000  # CREATE_NO_WINDOW
 
         self.last_run = datetime.now()
-        self.next_run = None # Disable scheduling while running
+        self.next_run = None  # Disable scheduling while running
 
         logging.info(f"running: {' '.join(shlex.quote(s) for s in args)}\n")
         return Popen(**p_args)
@@ -299,8 +298,13 @@ class BaseHandler:
         for task in self.tasks:
             try:
                 self.save_state(task.name, {"started": 0, "pid": 0}, False)
-                last_run = datetime.fromtimestamp(self.state[task.name].getfloat("last_run"))
-                task.set_last_run(last_run, last_run > datetime.now() - timedelta(hours=24))
+                task.set_last_run(datetime.fromtimestamp(status[task.name].getfloat("last_run")))
+                # Do not try to catch up if the task was supposed to run less than one day ago
+                # and is supposed to run again today
+                if task.next_run > datetime.now() - timedelta(
+                    days=1
+                ) and task.find_next_run() < datetime.now() + timedelta(hours=12):
+                    task.next_run = task.find_next_run()
             except:
                 pass
 
@@ -451,6 +455,7 @@ class ServiceHandler(BaseHandler):
             menu=pystray.Menu(
                 pystray.MenuItem("Tasks", pystray.Menu(tasks_menu)),
                 pystray.MenuItem("Open prestic folder", lambda: os_open_file(self.base_path)),
+                # pystray.MenuItem("Open web interface", lambda: os_open_file(self.base_path)),
                 pystray.MenuItem("Reload config", lambda: (self.load_config())),
                 pystray.MenuItem("Quit", lambda: self.quit()),
             ),
@@ -469,6 +474,8 @@ class ServiceHandler(BaseHandler):
             for task in self.tasks:
                 logging.info(f"    > {task.name} will next run {time_diff(task.next_run)}")
 
+            # TO DO: Handle missed tasks more gracefully (ie computer sleep). We shouldn't run a
+            # missed task if its next schedule is soon anyway (like we do in load_config)
             while self.running:
                 next_task = None
                 sleep_time = 60

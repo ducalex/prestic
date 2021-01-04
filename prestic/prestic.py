@@ -345,8 +345,11 @@ class ServiceHandler(BaseHandler):
 
     def notify(self, message, title=None):
         if self.gui:
-            self.gui.notify(message, f"{PROG_NAME}: {title}" if title else PROG_NAME)
-            time.sleep(1)
+            if self.gui.HAS_NOTIFICATION:
+                self.gui.notify(message, f"{PROG_NAME}: {title}" if title else PROG_NAME)
+                time.sleep(1)
+            else:
+                logging.info(message)
 
     def run_task(self, task):
         def task_log(lines):

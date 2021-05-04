@@ -11,10 +11,13 @@ from configparser import ConfigParser
 from copy import deepcopy
 from datetime import datetime, timedelta
 from getpass import getpass
+from http.server import BaseHTTPRequestHandler
 from io import StringIO, BytesIO
 from math import floor, ceil
 from pathlib import Path, PurePosixPath
 from subprocess import Popen, PIPE, STDOUT
+from socketserver import TCPServer
+from threading import Thread
 
 try:
     from base64 import b64decode
@@ -347,9 +350,105 @@ class ServiceHandler(BaseHandler):
         if self.gui:
             if self.gui.HAS_NOTIFICATION:
                 self.gui.notify(message, f"{PROG_NAME}: {title}" if title else PROG_NAME)
-                time.sleep(1)
+                time.sleep(0.5)
             else:
                 logging.info(message)
+
+    def proc_scheduler(self):
+        # TO DO: Handle missed tasks more gracefully (ie computer sleep). We shouldn't run a
+        # missed task if its next schedule is soon anyway (like we do in load_config)
+        logging.info("scheduler running with %d tasks" % len(self.tasks))
+        for task in self.tasks:
+            logging.info(f"    > {task.name} will next run {time_diff(task.next_run)}")
+
+        while self.running:
+            next_task = None
+            sleep_time = 60
+            try:
+                for task in self.tasks:
+                    if not task.next_run:
+                        pass
+                    if task.is_pending():  # or 'backup' in task['command']:
+                        self.run_task(task)
+                    if not next_task or task.next_run < next_task.next_run:
+                        next_task = task
+
+                if next_task:
+                    sleep_time = max(0, (next_task.next_run - datetime.now()).total_seconds())
+                    self.set_status(f"{next_task.name} will run {time_diff(next_task.next_run)}")
+
+            except Exception as e:
+                logging.error(f"service_loop crashed: {type(e).__name__} '{e}'")
+                self.notify(str(e), f"Unhandled exception: {type(e).__name__}")
+                # raise e
+
+            time.sleep(min(sleep_time, 10))
+
+    def proc_webui(self):
+        self.webui_host = "127.0.0.1"
+        self.webui_port = 8729
+        self.webui_token = "random!"
+        self.webui_url = f"http://{self.webui_host}:{self.webui_port}/?token={self.webui_token}"
+        try:
+            time.sleep(0.2)  # Wait for the gui to come up so we can show errors
+            self.server = TCPServer((self.webui_host, self.webui_port), BaseHTTPRequestHandler)
+            logging.info(f"webui running at {self.webui_url}")
+            self.server.serve_forever()
+        except Exception as e:
+            logging.error(f"webui error: {type(e).__name__} '{e}'")
+            self.notify(str(e), "Webui couldn't start")
+
+    def proc_gui(self):
+        try:
+            icon = Image.open(BytesIO(b64decode(PROG_ICON))).convert("RGBA")
+            self.icons = {
+                "norm": icon,
+                "busy": Image.alpha_composite(Image.new("RGBA", icon.size, (255, 0, 255, 255)), icon),
+                "fail": Image.alpha_composite(Image.new("RGBA", icon.size, (255, 0, 0, 255)), icon),
+            }
+
+            def on_run_now_click(task):
+                def on_click():
+                    self.notify(f"{task.name} will run next")
+                    task.next_run = datetime.now()
+
+                return on_click
+
+            def on_log_click(task):
+                def on_click():
+                    log_file = self.state[task.name].get("log_file", "")
+                    if log_file:
+                        os_open_url(self.base_path.joinpath("logs", log_file))
+
+                return on_click
+
+            def tasks_menu():
+                for task in self.tasks:
+                    task_menu = pystray.Menu(
+                        pystray.MenuItem(task.description, on_log_click(task)),
+                        pystray.Menu.SEPARATOR,
+                        pystray.MenuItem(f"Next run: {time_diff(task.next_run)}", lambda: 1),
+                        pystray.MenuItem(f"Last run: {time_diff(task.last_run)}", on_log_click(task)),
+                        pystray.Menu.SEPARATOR,
+                        pystray.MenuItem("Run Now", on_run_now_click(task)),
+                    )
+                    yield pystray.MenuItem(task.name, task_menu)
+
+            self.gui = pystray.Icon(
+                name=PROG_NAME,
+                icon=icon,
+                menu=pystray.Menu(
+                    pystray.MenuItem("Tasks", pystray.Menu(tasks_menu)),
+                    pystray.MenuItem("Open prestic folder", lambda: os_open_url(self.base_path)),
+                    pystray.MenuItem("Open web interface", lambda: os_open_url(self.webui_url)),
+                    pystray.MenuItem("Reload config", lambda: (self.load_config())),
+                    pystray.MenuItem("Quit", lambda: self.stop()),
+                ),
+            )
+            self.gui.run()
+        except Exception as e:
+            logging.warning("pystray couldn't be initialized, gui features won't be available")
+            logging.warning(f"proc_gui error: {type(e).__name__} '{e}'")
 
     def run_task(self, task):
         def task_log(lines):
@@ -379,6 +478,7 @@ class ServiceHandler(BaseHandler):
             return output, ret
 
         self.set_status(f"running task {task.name}", True)
+        self.notify(f"Running task {task.name}")
 
         if self.base_path.is_dir():
             log_file = f"{task.name}-{time.strftime('%Y.%m.%d_%H.%M')}.txt"
@@ -412,111 +512,34 @@ class ServiceHandler(BaseHandler):
         self.notify(("\n".join(output[-4:]))[-220:].strip(), status_txt)
         self.set_status(status_txt)
 
-    def run_gui(self, service_loop):
-        """ Build GUI callbacks and parameters """
-        icon = Image.open(BytesIO(b64decode(PROG_ICON))).convert("RGBA")
-        self.icons = {
-            "norm": icon,
-            "busy": Image.alpha_composite(Image.new("RGBA", icon.size, (255, 0, 255, 255)), icon),
-            "fail": Image.alpha_composite(Image.new("RGBA", icon.size, (255, 0, 0, 255)), icon),
-        }
-
-        def gui_setup(icon):
-            icon.visible = True
-            service_loop(icon)
-
-        def on_run_now_click(task):
-            def on_click():
-                self.notify(f"{task.name} will run next")
-                task.next_run = datetime.now()
-
-            return on_click
-
-        def on_log_click(task):
-            def on_click():
-                log_file = self.state[task.name].get("log_file", "")
-                if log_file:
-                    os_open_file(self.base_path.joinpath("logs", log_file))
-
-            return on_click
-
-        def tasks_menu():
-            for task in self.tasks:
-                task_menu = pystray.Menu(
-                    pystray.MenuItem(task.description, on_log_click(task)),
-                    pystray.Menu.SEPARATOR,
-                    pystray.MenuItem(f"Next run: {time_diff(task.next_run)}", lambda: 1),
-                    pystray.MenuItem(f"Last run: {time_diff(task.last_run)}", on_log_click(task)),
-                    pystray.Menu.SEPARATOR,
-                    pystray.MenuItem("Run Now", on_run_now_click(task)),
-                )
-                yield pystray.MenuItem(task.name, task_menu)
-
-        self.gui = pystray.Icon(
-            name=PROG_NAME,
-            icon=icon,
-            menu=pystray.Menu(
-                pystray.MenuItem("Tasks", pystray.Menu(tasks_menu)),
-                pystray.MenuItem("Open prestic folder", lambda: os_open_file(self.base_path)),
-                # pystray.MenuItem("Open web interface", lambda: os_open_file(self.base_path)),
-                pystray.MenuItem("Reload config", lambda: (self.load_config())),
-                pystray.MenuItem("Quit", lambda: self.quit()),
-            ),
-        )
-        self.gui.run(setup=gui_setup)
-
     def run(self, profile, args=[]):
+        self.running = True
         self.status = None
+        self.server = None
         self.gui = None
 
-        def service_loop(*args):
-            self.save_state("__prestic__", {"pid": os.getpid()})
-            self.set_status("service started")
-            self.running = True
+        self.save_state("__prestic__", {"pid": os.getpid()})
+        self.set_status("service started")
 
-            for task in self.tasks:
-                logging.info(f"    > {task.name} will next run {time_diff(task.next_run)}")
+        Thread(target=self.proc_scheduler, name="scheduler").start()
+        Thread(target=self.proc_webui, name="webui").start()
 
-            # TO DO: Handle missed tasks more gracefully (ie computer sleep). We shouldn't run a
-            # missed task if its next schedule is soon anyway (like we do in load_config)
-            while self.running:
-                next_task = None
-                sleep_time = 60
-                try:
-                    for task in self.tasks:
-                        if task.next_run:
-                            if task.is_pending():  # or 'backup' in task['command']:
-                                self.run_task(task)
-                            if not next_task or task.next_run < next_task.next_run:
-                                next_task = task
+        # if gui_enabled:
+        self.proc_gui()
 
-                    if next_task:
-                        sleep_time = max(0, (next_task.next_run - datetime.now()).total_seconds())
-                        self.set_status(
-                            f"{next_task.name} will run {time_diff(next_task.next_run)}"
-                        )
+        while self.running:
+            time.sleep(1)
 
-                except Exception as e:
-                    logging.error(f"service_loop crashed: {type(e).__name__} '{e}'")
-                    self.notify(str(e), f"Unhandled exception: {type(e).__name__}")
-                    # raise e
-
-                time.sleep(min(sleep_time, 10))
-            self.quit(0)
-
-        if pystray:
-            self.run_gui(service_loop)
-        else:
-            logging.warning("pystray not installed, gui features won't be available")
-            service_loop()
-
-    def quit(self, rc=0):
+    def stop(self, rc=0):
         logging.info("shutting down...")
         self.running = False
-        if self.gui:
-            self.gui.visible = False
-            # self.gui.stop()
-        os._exit(rc)
+        try:
+            if self.gui:
+                self.gui.visible = False
+            if self.server:
+                self.server.shutdown()
+        finally:
+            os._exit(rc)
 
 
 class KeyringHandler(BaseHandler):
@@ -577,7 +600,7 @@ def time_diff(time, from_time=None):
     return f"{days}d {hours}h {minutes}m {suffix}"
 
 
-def os_open_file(path):
+def os_open_url(path):
     if sys.platform == "win32":
         Popen(["start", str(Path(path))], shell=True).wait()
     elif sys.platform == "darwin":

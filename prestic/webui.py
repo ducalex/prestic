@@ -11,7 +11,7 @@ import json
 import urllib.parse
 import re
 
-from prestic import BaseHandler, Profile, time_diff, os_open_file, PIPE, STDOUT
+from prestic import BaseHandler, Profile, time_diff, PIPE, STDOUT
 
 
 class PresticRequestHandler(BaseHTTPRequestHandler):

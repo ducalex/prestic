@@ -333,13 +333,13 @@ class ServiceHandler(BaseHandler):
     The service is also responsible for the GUI.
     """
 
-    def set_status(self, status, busy=False):
-        if status != self.status:
-            logging.info(f"status: {status}")
-            self.status = status
+    def set_status(self, message, busy=False):
+        if message != self.status:
+            logging.info(f"status: {message}")
+            self.status = message
             if self.gui:
-                self.gui.title = "Prestic backup manager\n" + (status or "idle")
-                icon = self.icons["busy"] if busy else self.icons["norm"]
+                self.gui.title = "Prestic backup manager\n" + (message or "idle")
+                icon = self.icons["busy" if busy else "norm"]
                 if self.gui.icon is not icon:
                     self.gui.icon = icon
                 # This can cause issues if the menu is currently open
@@ -350,7 +350,7 @@ class ServiceHandler(BaseHandler):
         if self.gui:
             if self.gui.HAS_NOTIFICATION:
                 self.gui.notify(message, f"{PROG_NAME}: {title}" if title else PROG_NAME)
-                time.sleep(0.5)
+                time.sleep(5) # 0.5s needed for stability, rest to give time for reading
             else:
                 logging.info(message)
 
@@ -376,6 +376,8 @@ class ServiceHandler(BaseHandler):
                 if next_task:
                     sleep_time = max(0, (next_task.next_run - datetime.now()).total_seconds())
                     self.set_status(f"{next_task.name} will run {time_diff(next_task.next_run)}")
+                else:
+                    self.set_status(f"no scheduled task")
 
             except Exception as e:
                 logging.error(f"service_loop crashed: {type(e).__name__} '{e}'")
@@ -498,15 +500,16 @@ class ServiceHandler(BaseHandler):
             if try_run(["unlock"])[1] == 0:
                 output, ret = try_run()
 
+        task.set_last_run()
+        log_fd.close()
+
         if ret == 0:
             status_txt = f"task {task.name} finished"
         elif ret == 3 and "backup" in task.command:
             status_txt = f"task {task.name} finished with some warnings..."
         else:
             status_txt = f"task {task.name} FAILED! (exit code: {ret})"
-
-        task.set_last_run()
-        log_fd.close()
+            # os_open_url(log_file)
 
         self.save_state(task.name, {"last_run": time.time(), "exit_code": ret, "pid": 0})
         self.notify(("\n".join(output[-4:]))[-220:].strip(), status_txt)
@@ -517,6 +520,7 @@ class ServiceHandler(BaseHandler):
         self.status = None
         self.server = None
         self.gui = None
+        self.errors = []
 
         self.save_state("__prestic__", {"pid": os.getpid()})
         self.set_status("service started")

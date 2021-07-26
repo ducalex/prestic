@@ -2,7 +2,7 @@ import setuptools
 
 setuptools.setup(
     name="prestic",
-    version="0.0.1",
+    version="0.0.2",
     license="MIT",
     author="Alex Duchesne",
     author_email="alex@alexou.net",
@@ -22,7 +22,6 @@ setuptools.setup(
     entry_points={
         "console_scripts": [
             "prestic=prestic:main",
-            "prestic-web=prestic:start_webui",
         ],
         "gui_scripts": [
             "prestic-gui=prestic:gui",

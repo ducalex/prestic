@@ -6,6 +6,10 @@ import os
 import shlex
 import sys
 import time
+import mimetypes
+import json
+import urllib.parse
+import re
 from argparse import ArgumentParser
 from configparser import ConfigParser
 from copy import deepcopy
@@ -370,7 +374,9 @@ class ServiceHandler(BaseHandler):
                         pass
                     if task.is_pending():  # or 'backup' in task['command']:
                         self.run_task(task)
-                    if not next_task or task.next_run < next_task.next_run:
+                    if not next_task:
+                        next_task = task
+                    elif task.next_run and next_task.next_run and task.next_run < next_task.next_run:
                         next_task = task
 
                 if next_task:
@@ -387,13 +393,18 @@ class ServiceHandler(BaseHandler):
             time.sleep(min(sleep_time, 10))
 
     def proc_webui(self):
+        # TO DO: Stop the web server after a period of inactivity (to release memory but also for security)
         self.webui_host = "127.0.0.1"
-        self.webui_port = 8729
-        self.webui_token = "random!"
-        self.webui_url = f"http://{self.webui_host}:{self.webui_port}/?token={self.webui_token}"
+        self.webui_port = 8711 # 0
+        self.webui_url = ""
+        self.webui_token = ""
         try:
-            time.sleep(0.2)  # Wait for the gui to come up so we can show errors
-            self.server = TCPServer((self.webui_host, self.webui_port), BaseHTTPRequestHandler)
+            WebRequestHandler.profiles = self.profiles
+            time.sleep(0.2) # Wait for the gui to come up so we can show errors
+            self.server = TCPServer((self.webui_host, self.webui_port), WebRequestHandler)
+            self.webui_host = self.server.server_address[0]
+            self.webui_port = self.server.server_address[1] # In case we use automatic assignment
+            self.webui_url = f"http://{self.webui_host}:{self.webui_port}/" #  "?token={self.webui_token}"
             logging.info(f"webui running at {self.webui_url}")
             self.server.serve_forever()
         except Exception as e:
@@ -509,7 +520,8 @@ class ServiceHandler(BaseHandler):
             status_txt = f"task {task.name} finished with some warnings..."
         else:
             status_txt = f"task {task.name} FAILED! (exit code: {ret})"
-            # os_open_url(log_file)
+            if log_file:
+                os_open_url(self.base_path.joinpath("logs", log_file))
 
         self.save_state(task.name, {"last_run": time.time(), "exit_code": ret, "pid": 0})
         self.notify(("\n".join(output[-4:]))[-220:].strip(), status_txt)
@@ -590,6 +602,159 @@ class CommandHandler(BaseHandler):
         exit(-1)
 
 
+class WebRequestHandler(BaseHTTPRequestHandler):
+    """Handler"""
+
+    icons = {"file": "&#128196;", "dir": "&#128193;", "snapshot": "&#128190;"}
+    template = """
+        <html>
+        <head>
+            <style>
+                h2 {text-align:center;}
+                pre {width: min-content;}
+                table,pre {margin: 0 auto;}
+                table {border-collapse: collapse; }
+                thead th {text-align: left; font-weight: bold;}
+                tbody tr:hover {background: #eee;}
+                table, td, tr, th { border: 1px solid black; padding: .1em .5em;}
+            </style>
+        </head>
+        <body>%s</body>
+        </html>
+    """
+
+    profiles = {}
+    snapshots = {}
+    snapshots_data = {}
+
+    def do_respond(self, code, content, content_type="text/html"):
+        self.send_response(code)
+        self.send_header("Content-type", content_type)
+        self.end_headers()
+        if type(content) is str:
+            segments = []
+            path = PurePosixPath(self.path)
+            while str(path) != "/":
+                segments.append(f"<a href='{path}'>{path.name}</a>")
+                path = path.parent
+            segments.append("<a href='/'>Home</a>")
+            content = f"<h2>{' / '.join(reversed(segments))}</h2>" + content
+            self.wfile.write((self.template % content).encode("utf-8"))
+        elif type(content) is bytes:
+            self.wfile.write(content)
+        else:
+            while True:
+                data = content.read(64 * 1024)
+                if not data:
+                    break
+                self.wfile.write(data)
+
+    def do_GET(self):
+        (scheme, netloc, path, query, fragment) = urllib.parse.urlsplit(self.path)
+        path = PurePosixPath("/", urllib.parse.unquote(path))
+
+        profile_name = path.parts[1] if len(path.parts) > 1 else ""
+        snapshot_id = path.parts[2] if len(path.parts) > 2 else ""
+        browse_path = str(PurePosixPath("/", *(path.parts[3:] if len(path.parts) > 3 else [""])))
+
+        profile = self.profiles.get(profile_name)
+
+        def gen_table(rows, header=None):
+            content = "<table>"
+            if header:
+                content += "<thead><tr><th>" + ("</th><th>".join(header)) + "</th></tr></thead>"
+            content += "<tbody>"
+            for row in rows:
+                content += "<tr><td>" + ("</td><td>".join(row)) + "</td></tr>"
+            content += "</tbody></table>"
+            return content
+
+        if not profile_name:
+            """ list profiles """
+            table = []
+            for p in self.profiles.values():
+                if p["repository"] or p["repository-file"]:
+                    table.append(
+                        [
+                            p["name"],
+                            p["description"],
+                            p["repository"],
+                            f"<a href='/{p['name']}'>snapshots</a> | ...",
+                        ]
+                    )
+            self.do_respond(200, gen_table(table, ["Name", "Description", "Repository", "Actions"]))
+
+        elif not profile:
+            self.do_respond(404, "profile not found")
+
+        elif not snapshot_id:
+            """ list snapshots """
+            proc = profile.run(["snapshots", "--json"], stdout=PIPE)
+            snapshots = json.load(proc.stdout)
+            if snapshots:
+                snapshots = sorted(snapshots, key=lambda x: x["time"], reverse=True)
+                table = []
+                for s in snapshots:
+                    table.append(
+                        [
+                            str(s['short_id']),
+                            str(format_date(s["time"])),
+                            str(s["hostname"]),
+                            str(s["paths"]),
+                            f"<a href='/{profile['name']}/{s['short_id']}'>browse</a> | <a href='/{profile['name']}/{s['short_id']}'>diff</a>",
+                        ]
+                    )
+                self.do_respond(200, gen_table(table, ["ID", "Created", "Host", "Paths", "Actions"]))
+            else:
+                self.do_respond(200, "No snapshot found")
+
+        elif query == "dump":
+            """ serve file """
+            proc = profile.run(["dump", snapshot_id, browse_path], stdout=PIPE, text_output=False)
+            self.do_respond(200, proc.stdout, mimetypes.guess_type(browse_path))
+
+        else:
+            """ list files """
+            if snapshot_id not in self.snapshots_data:
+                self.snapshots_data[snapshot_id] = files = {}
+                proc = profile.run(["ls", "--json", snapshot_id], stdout=PIPE)
+                for line in proc.stdout:
+                    f = json.loads(line)
+                    if f and f["struct_type"] == "node":
+                        parent_path = str(PurePosixPath(f["path"]).parent)
+                        if parent_path not in files:
+                            files[parent_path] = []
+                        files[parent_path].append(
+                            [f["name"], f["type"], f["size"] if "size" in f else "", f["mtime"]]
+                        )
+
+            if browse_path not in self.snapshots_data[snapshot_id]:
+                if str(PurePosixPath(browse_path).parent) in self.snapshots_data[snapshot_id]:
+                    proc = profile.run(
+                        ["dump", snapshot_id, browse_path], stdout=PIPE, text_output=False
+                    )
+                    self.do_respond(200, proc.stdout, mimetypes.guess_type(browse_path))
+                else:
+                    self.do_respond(404, "path not found")
+                return
+
+            base_path = PurePosixPath("/", profile.name, snapshot_id, browse_path[1:])
+            files = sorted(self.snapshots_data[snapshot_id][browse_path], key=lambda x: x[1])
+            table = []
+
+            if len(base_path.parts) >= 4:
+                table.append(
+                    [f"{self.icons['dir']} <a href='{base_path.parent}'>..</a>", "", "", ""]
+                )
+
+            for name, type, size, mtime in files:
+                nav_link = f"{self.icons.get(type, '')} <a href='{base_path/name}'>{name}</a>"
+                down_link = f"<a href='{base_path/name}?dump'>Download</a>"
+                table.append([nav_link, str(size), format_date(mtime), down_link])
+
+            self.do_respond(200, gen_table(table, ["Name", "Size", "Date modified", "Download"]))
+
+
 def time_diff(time, from_time=None):
     if not time:
         return "never"
@@ -611,6 +776,15 @@ def os_open_url(path):
         Popen(["open", str(Path(path))], shell=True).wait()
     else:
         Popen(["xdg-open", str(Path(path))]).wait()
+
+
+def format_date(dt):
+    if type(dt) is str:
+        dt = re.sub(r"\.[0-9]{3,}", "", dt)  # Python doesn't like variable ms precision
+        dt = datetime.fromisoformat(dt)
+    return str(dt)
+    # return time_diff(dt)
+    # return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def main(argv=None):
@@ -643,3 +817,5 @@ def gui():
 
 if __name__ == "__main__":
     main()
+
+#TO DO: Icon should become red until a user acknowledges it when an error occurs in a task

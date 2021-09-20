@@ -65,6 +65,8 @@ class Profile:
         ("io-priority", "str", None, None),
         ("schedule", "str", None, None),
         ("global-flags", "list", None, []),
+        # Below are restic's own options as of 0.12
+        # Listed here for parsing/aliasing convenience
         ("repository", "str", "flag.repo", None),
         ("limit-download", "str", "flag.limit-download", None),
         ("limit-upload", "str", "flag.limit-upload", None),
@@ -333,9 +335,7 @@ class BaseHandler:
 
 
 class ServiceHandler(BaseHandler):
-    """Run in service mode (task scheduler) and output to files
-    The service is also responsible for the GUI.
-    """
+    """ Run in service mode (task scheduler) and output to log files """
 
     def set_status(self, message, busy=False):
         if message != self.status:
@@ -556,6 +556,12 @@ class ServiceHandler(BaseHandler):
                 self.server.shutdown()
         finally:
             os._exit(rc)
+
+
+class TrayIconHandler(ServiceHandler):
+    """ Show a tray icon when running in service mode (task scheduler) """
+
+    pass
 
 
 class KeyringHandler(BaseHandler):
@@ -792,13 +798,16 @@ def main(argv=None):
     parser.add_argument("-c", "--config", default=PROG_FOLDER, help="config file or directory")
     parser.add_argument("-p", "--profile", default="default", help="profile to use")
     parser.add_argument("--service", const=True, action="store_const", help="start service")
+    parser.add_argument("--gui", const=True, action="store_const", help="start service")
     parser.add_argument("--keyring", const=True, action="store_const", help="keyring management")
     parser.add_argument("command", nargs="...", help="restic command to run...")
     args = parser.parse_args(argv)
 
     logging.basicConfig(format="[%(levelname)s] %(message)s", level=logging.INFO)
 
-    if args.service:
+    if args.gui:
+        handler = TrayIconHandler(args.config)
+    elif args.service:
         handler = ServiceHandler(args.config)
     elif args.keyring:
         handler = KeyringHandler(args.config)
@@ -812,7 +821,7 @@ def main(argv=None):
 
 
 def gui():
-    main([*sys.argv[1:], "--service"])
+    main([*sys.argv[1:], "--gui"])
 
 
 if __name__ == "__main__":

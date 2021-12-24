@@ -83,10 +83,8 @@ limit-download =
 limit-upload =
 # (string|list) default restic command to execute (if none provided):
 command =
-# (list) restic args for default command:
+# (list) restic arguments for default command:
 args =
-# (list) restic flags for default command:
-flags =
 # (int) be verbose (specify level)
 verbose = 2
 # (string) set the cache directory
@@ -100,36 +98,10 @@ json = false
 # (list) Other flags applied before the restic command:
 global-flags =
 
-# (string) the following environment variables are supported:
-aws-access-key-id =
-aws-secret-access-key =
-aws-default-region =
-st-auth =
-st-user =
-st-key =
-os-auth-url =
-os-region-name =
-os-username =
-os-password =
-os-tenant-id =
-os-tenant-name =
-os-user-domain-name =
-os-project-name =
-os-project-domain-name =
-os-application-credential-id =
-os-application-credential-name =
-os-application-credential-secret =
-os-storage-url =
-os-auth-token =
-b2-account-id =
-b2-account-key =
-azure-account-name =
-azure-account-key =
-google-project-id =
-google-application-credentials =
-rclone-bwlimit =
-# (string) arbitrary environment variables can also be set in case one is missing above:
-env.OTHER_ENV_VAR = VALUE
+# (string) environment variables can be set:
+env.AWS_ACCESS_KEY_ID = VALUE
+env.AWS_SECRET_ACCESS_KEY = VALUE
+
 ````
 
 ### Simple configuration example

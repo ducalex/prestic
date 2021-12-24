@@ -59,14 +59,12 @@ class Profile:
         ("inherit", "list", None, []),
         ("command", "list", None, []),
         ("args", "list", None, []),
-        ("flags", "list", None, []),
         ("wait-for-lock", "str", None, None),
         ("cpu-priority", "str", None, None),
         ("io-priority", "str", None, None),
         ("schedule", "str", None, None),
         ("global-flags", "list", None, []),
-        # Below are restic's own options as of 0.12
-        # Listed here for parsing/aliasing convenience
+        # Convenient restic option aliases
         ("repository", "str", "flag.repo", None),
         ("limit-download", "str", "flag.limit-download", None),
         ("limit-upload", "str", "flag.limit-upload", None),
@@ -82,34 +80,6 @@ class Profile:
         ("password-file", "str", "env.RESTIC_PASSWORD_FILE", None),
         ("cache-dir", "str", "env.RESTIC_CACHE_DIR", None),
         ("key-hint", "str", "env.RESTIC_KEY_HINT", None),
-        ("progress-fps", "str", "env.RESTIC_PROGRESS_FPS", None),
-        ("aws-access-key-id", "str", "env.AWS_ACCESS_KEY_ID", None),
-        ("aws-secret-access-key", "str", "env.AWS_SECRET_ACCESS_KEY", None),
-        ("aws-default-region", "str", "env.AWS_DEFAULT_REGION", None),
-        ("st-auth", "str", "env.ST_AUTH", None),
-        ("st-user", "str", "env.ST_USER", None),
-        ("st-key", "str", "env.ST_KEY", None),
-        ("os-auth-url", "str", "env.OS_AUTH_URL", None),
-        ("os-region-name", "str", "env.OS_REGION_NAME", None),
-        ("os-username", "str", "env.OS_USERNAME", None),
-        ("os-password", "str", "env.OS_PASSWORD", None),
-        ("os-tenant-id", "str", "env.OS_TENANT_ID", None),
-        ("os-tenant-name", "str", "env.OS_TENANT_NAME", None),
-        ("os-user-domain-name", "str", "env.OS_USER_DOMAIN_NAME", None),
-        ("os-project-name", "str", "env.OS_PROJECT_NAME", None),
-        ("os-project-domain-name", "str", "env.OS_PROJECT_DOMAIN_NAME", None),
-        ("os-application-credential-id", "str", "env.OS_APPLICATION_CREDENTIAL_ID", None),
-        ("os-application-credential-name", "str", "env.OS_APPLICATION_CREDENTIAL_NAME", None),
-        ("os-application-credential-secret", "str", "env.OS_APPLICATION_CREDENTIAL_SECRET", None),
-        ("os-storage-url", "str", "env.OS_STORAGE_URL", None),
-        ("os-auth-token", "str", "env.OS_AUTH_TOKEN", None),
-        ("b2-account-id", "str", "env.B2_ACCOUNT_ID", None),
-        ("b2-account-key", "str", "env.B2_ACCOUNT_KEY", None),
-        ("azure-account-name", "str", "env.AZURE_ACCOUNT_NAME", None),
-        ("azure-account-key", "str", "env.AZURE_ACCOUNT_KEY", None),
-        ("google-project-id", "str", "env.GOOGLE_PROJECT_ID", None),
-        ("google-application-credentials", "str", "env.GOOGLE_APPLICATION_CREDENTIALS", None),
-        ("rclone-bwlimit", "str", "env.RCLONE_BWLIMIT", None),
     ]
     # Break down _options for easier access
     _keymap = {key: remap or key for key, datatype, remap, default in _options}
@@ -222,7 +192,6 @@ class Profile:
         elif self.command:
             args += self.command
             args += self.args
-            args += self.flags
 
         return env, args
 
@@ -494,7 +463,7 @@ class ServiceHandler(BaseHandler):
         self.notify(f"Running task {task.name}")
 
         if self.base_path.is_dir():
-            log_file = f"{task.name}-{time.strftime('%Y.%m.%d_%H.%M')}.txt"
+            log_file = f"{time.strftime('%Y.%m.%d_%H.%M')}-{task.name}.txt"
             log_fd = self.base_path.joinpath("logs", log_file).open("w")
         else:
             log_file = ""

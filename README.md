@@ -17,23 +17,24 @@ _Note: If you prefer you can also directly download `prestic.py` and put it some
  (it is standalone)._
 
 
-### Start service on login
+### Start Prestic on login
 - Windows: Put a link to `prestic-gui.exe` in your `Startup` folder (run `where prestic-gui` to locate it if needed)
-- Linux: Add command `prestic --service` to your startup applications
+- Linux: Add command `prestic --gui` to your startup applications
 
 
 # Usage
-- Run profile-defined command: `prestic -p profilename`
+- Run profile-defined default command: `prestic -p profilename`
 - Run any restic command on profile: `prestic -p profilename snapshots`
-- Start service: `prestic --service`
+- Start gui and scheduler: `prestic --gui`
+- Start scheduler only: `prestic --service`
 
 ## Keyring
 The keyring allows you to let your operating system store repository passwords encrypted in your 
 user profile. This is the best password method if it is available to you.
 
-To use, add `password-keyring = name` to your prestic profile, where `name` can be anything you 
+To use, add `password-keyring = <name>` to your prestic profile, where `<name>` can be anything you 
 want to identify that password. Then to set a password run the following command: 
-`prestic --keyring set name`.
+`prestic --keyring set <name>`.
 
 
 # Configuration file
@@ -65,7 +66,7 @@ wait-for-lock =
 # (string) path to restic executable:
 restic-path = restic
 
-# (string) repository uri:
+# (string) repository uri
 repository = sftp:user@domain:folder
 # (string) repository password (plain text)
 password =
@@ -77,16 +78,18 @@ password-command =
 password-keyring =
 # (string) ID of key to try decrypting first, before other keys
 key-hint =
-# (int) limits downloads to a maximum rate in KiB/s.
+# (int) limits downloads to a maximum rate in KiB/s
 limit-download =
-# (int) limits uploads to a maximum rate in KiB/s.
+# (int) limits uploads to a maximum rate in KiB/s
 limit-upload =
 # (string|list) default restic command to execute (if none provided):
 command =
-# (list) restic arguments for default command:
+# (list) restic arguments for default command
 args =
-# (int) be verbose (specify level)
-verbose = 2
+# (int) be verbose (specify level 0-3)
+verbose = 
+# (regex) ignore lines matching this expression when writing log files
+log-filter = ^unchanged\s/
 # (string) set the cache directory
 cache-dir = 
 # (bool) do not use the local cache
@@ -119,12 +122,11 @@ command = backup
 args =
     /home/user/folder1
     /home/user/folder2
-flags =
     --iexclude="*.lock"
 
 # Where the my-backup profile will run daily at 12:00
 # You can also issue manual commands:
 # prestic -p my-backup
 # prestic -p my-repo list snapshots
-# prestic -p my-backup list snapshots # this overrides my-backup's command/args/flags
+# prestic -p my-backup list snapshots # this overrides my-backup's command/args but not global-flags
 ````

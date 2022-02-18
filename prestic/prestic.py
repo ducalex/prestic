@@ -61,15 +61,15 @@ class Profile:
         ("cpu-priority", "str", None, None),
         ("io-priority", "str", None, None),
         ("schedule", "str", None, None),
+        ("log-filter", "str", None, None),
         ("global-flags", "list", None, []),
         # Convenient restic option aliases
         ("repository", "str", "flag.repo", None),
-        ("limit-download", "str", "flag.limit-download", None),
-        ("limit-upload", "str", "flag.limit-upload", None),
-        ("verbose", "str", "flag.verbose", None),
+        ("limit-download", "int", "flag.limit-download", None),
+        ("limit-upload", "int", "flag.limit-upload", None),
+        ("verbose", "int", "flag.verbose", None),
         ("no-cache", "bool", "flag.no-cache", None),
         ("no-lock", "bool", "flag.no-lock", None),
-        ("quiet", "bool", "flag.quiet", None),
         ("json", "bool", "flag.json", None),
         ("option", "list", "flag.option", None),
         ("repository-file", "str", "env.RESTIC_REPOSITORY_FILE", None),
@@ -176,13 +176,12 @@ class Profile:
             if key.startswith("env."):
                 env[key[4:]] = self[key]
             elif key.startswith("flag."):
-                if type(self[key]) is bool and self[key]:
-                    args += ["--" + key[5:]]
-                elif type(self[key]) is list:
-                    for value in self[key]:
-                        args += ["--" + key[5:], value]
-                elif type(self[key]) is str:
-                    args += ["--" + key[5:], self[key]]
+                values = self[key] if type(self[key]) is list else [self[key]]
+                for val in values:
+                    if type(val) is bool and val:
+                        args += [f"--{key[5:]}"]
+                    elif type(val) is str:
+                        args += [f"--{key[5:]}={val}"] if val.isalnum() else [f"--{key[5:]}", val]
 
         # Ignore default command if any argument was given
         if cmd_args:
@@ -200,6 +199,7 @@ class Profile:
 
         if text_output:
             p_args["universal_newlines"] = True
+            p_args["encoding"] = "utf-8"
             p_args["errors"] = "replace"
             p_args["bufsize"] = 1
 
@@ -291,6 +291,14 @@ class BaseHandler:
         if write and self.base_path.is_dir():
             with self.base_path.joinpath("status.ini").open("w") as fp:
                 self.state.write(fp)
+
+    def dump_profiles(self):
+        print(f"\nAvailable profiles:")
+        for name, profile in self.profiles.items():
+            repository = profile["repository"] or profile["repository-file"] or None
+            if repository:
+                command = profile.command if profile.command else ""
+                print(f"    > {name} ({profile.description}) [{repository}] {command}")
 
     def run(self, profile=None, args=[]):
         logging.info(f"running {args} on {profile}!")
@@ -431,11 +439,24 @@ class ServiceHandler(BaseHandler):
             logging.warning(f"proc_gui error: {type(e).__name__} '{e}'")
 
     def run_task(self, task):
-        def task_log(lines):
-            for line in lines.splitlines():
-                logging.info(f"[task_log] {line}")
+        try:
+            log_filter = re.compile(task['log-filter']) if task['log-filter'] else None
+            log_file = f"{time.strftime('%Y.%m.%d_%H.%M')}-{task.name}.txt"
+            log_fd = self.base_path.joinpath("logs", log_file).open("w", encoding="utf-8", errors="replace")
+        except:
+            log_file = "stdout"
+            log_fd = None
+
+        self.set_status(f"running task {task.name}", True)
+        self.notify(f"Running task {task.name}")
+        self.save_state(task.name, {"started": time.time(), "log_file": log_file})
+
+        def task_log(line):
+            if log_fd:
                 log_fd.write(f"[{datetime.now()}] {line}\n")
                 log_fd.flush()
+            else:
+                logging.info(f"[task_log] {line}")
 
         def try_run(cmd_args=[]):
             proc = task.run(cmd_args, stdout=PIPE, stderr=STDOUT)
@@ -448,26 +469,16 @@ class ServiceHandler(BaseHandler):
             task_log(f"Restic output:\n ")
 
             for line in proc.stdout:
-                output.append(line.rstrip())
-                task_log(line.rstrip())
+                line = line.rstrip("\r\n")
+                if not log_filter or not log_filter.match(line):
+                    output.append(line)
+                    task_log(line)
 
             ret = proc.wait()
 
             task_log(f" \nRestic exit code: {ret}\n ")
 
             return output, ret
-
-        self.set_status(f"running task {task.name}", True)
-        self.notify(f"Running task {task.name}")
-
-        if self.base_path.is_dir():
-            log_file = f"{time.strftime('%Y.%m.%d_%H.%M')}-{task.name}.txt"
-            log_fd = self.base_path.joinpath("logs", log_file).open("w")
-        else:
-            log_file = ""
-            log_fd = StringIO()
-
-        self.save_state(task.name, {"started": time.time(), "log_file": log_file})
 
         output, ret = try_run()
 
@@ -479,15 +490,16 @@ class ServiceHandler(BaseHandler):
                 output, ret = try_run()
 
         task.set_last_run()
-        log_fd.close()
+        if log_fd:
+            log_fd.close()
 
         if ret == 0:
-            status_txt = f"task {task.name} finished"
+            status_txt = f"task {task.name} finished successfully."
         elif ret == 3 and "backup" in task.command:
             status_txt = f"task {task.name} finished with some warnings..."
         else:
-            status_txt = f"task {task.name} FAILED! (exit code: {ret})"
-            if log_file:
+            status_txt = f"task {task.name} FAILED with exit code: {ret} !"
+            if log_file and log_fd:
                 os_open_url(self.base_path.joinpath("logs", log_file))
 
         self.save_state(task.name, {"last_run": time.time(), "exit_code": ret, "pid": 0})
@@ -566,12 +578,7 @@ class CommandHandler(BaseHandler):
                 logging.error(f"unable to start restic: {e}")
         else:
             logging.error(f"profile {profile_name} does not exist")
-            print(f"\nAvailable profiles:")
-            for name, profile in self.profiles.items():
-                repository = profile["repository"] or profile["repository-file"] or None
-                if repository:
-                    command = profile.command if profile.command else ""
-                    print(f"    > {name} ({profile.description}) [{repository}] {command}")
+            self.dump_profiles()
         exit(-1)
 
 
@@ -756,8 +763,6 @@ def format_date(dt):
         dt = re.sub(r"\.[0-9]{3,}", "", dt)  # Python doesn't like variable ms precision
         dt = datetime.fromisoformat(dt)
     return str(dt)
-    # return time_diff(dt)
-    # return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def main(argv=None):

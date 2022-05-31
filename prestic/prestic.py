@@ -61,7 +61,6 @@ class Profile:
         ("cpu-priority", "str", None, None),
         ("io-priority", "str", None, None),
         ("schedule", "str", None, None),
-        ("log-filter", "str", None, None),
         ("global-flags", "list", None, []),
         # Convenient restic option aliases
         ("repository", "str", "flag.repo", None),
@@ -440,12 +439,16 @@ class ServiceHandler(BaseHandler):
 
     def run_task(self, task):
         try:
-            log_filter = re.compile(task['log-filter']) if task['log-filter'] else None
             log_file = f"{time.strftime('%Y.%m.%d_%H.%M')}-{task.name}.txt"
             log_fd = self.base_path.joinpath("logs", log_file).open("w", encoding="utf-8", errors="replace")
         except:
             log_file = "stdout"
             log_fd = None
+
+        if "backup" in task.command: # and task.verbose < 2:
+            log_filter = re.compile("^unchanged\s/")
+        else:
+            log_filter = None
 
         self.set_status(f"running task {task.name}", True)
         self.notify(f"Running task {task.name}")

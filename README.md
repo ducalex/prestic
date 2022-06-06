@@ -57,6 +57,8 @@ inherit =
 # (string) Run this profile periodically (will do nothing if command not set)
 # Format is: `daily at 23:59` or `monthly at 23:59` or `mon,tue,wed at 23:59`. Hourly is also possible: `daily at *:30`
 schedule =
+# (bool) controls non-essential notifications (errors are always shown)
+notifications = on
 # (string) sets cpu priority (idle, low, normal, high)
 cpu-priority =
 # (string) sets disk io priority (idle, low, normal, high)

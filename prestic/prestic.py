@@ -62,6 +62,7 @@ class Profile:
         ("io-priority", "str", None, None),
         ("schedule", "str", None, None),
         ("global-flags", "list", None, []),
+        ("notifications", "bool", None, True), # all info errors warning none
         # Convenient restic option aliases
         ("repository", "str", "flag.repo", None),
         ("limit-download", "int", "flag.limit-download", None),
@@ -396,7 +397,8 @@ class ServiceHandler(BaseHandler):
 
             def on_run_now_click(task):
                 def on_click():
-                    self.notify(f"{task.name} will run next")
+                    if task["notifications"]:
+                        self.notify(f"{task.name} will run next")
                     task.next_run = datetime.now()
 
                 return on_click
@@ -450,9 +452,10 @@ class ServiceHandler(BaseHandler):
         else:
             log_filter = None
 
-        self.set_status(f"running task {task.name}", True)
-        self.notify(f"Running task {task.name}")
         self.save_state(task.name, {"started": time.time(), "log_file": log_file})
+        self.set_status(f"running task {task.name}", True)
+        if task["notifications"]:
+            self.notify(f"Running task {task.name}")
 
         def task_log(line):
             if log_fd:
@@ -506,8 +509,9 @@ class ServiceHandler(BaseHandler):
                 os_open_url(self.base_path.joinpath("logs", log_file))
 
         self.save_state(task.name, {"last_run": time.time(), "exit_code": ret, "pid": 0})
-        self.notify(("\n".join(output[-4:]))[-220:].strip(), status_txt)
         self.set_status(status_txt)
+        if task["notifications"] or ret != 0:
+            self.notify(("\n".join(output[-4:]))[-220:].strip(), status_txt)
 
     def run(self, profile, args=[]):
         self.running = True
@@ -662,7 +666,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                             p["name"],
                             p["description"],
                             p["repository"],
-                            f"<a href='/{p['name']}'>snapshots</a> | ...",
+                            f"<a href='/{p['name']}'>snapshots</a> | <a href='/{p['name']}'>check</a> | ...",
                         ]
                     )
             self.do_respond(200, gen_table(table, ["Name", "Description", "Repository", "Actions"]))
@@ -796,6 +800,9 @@ def main(argv=None):
 
 
 def gui():
+    # Fixes some issues when invoked by pythonw.exe (but we should use .prestic/stderr.txt I suppose)
+    sys.stdout = sys.stdout or open(os.devnull, "w")
+    sys.stderr = sys.stderr or open(os.devnull, "w")
     main([*sys.argv[1:], "--gui"])
 
 

@@ -53,15 +53,14 @@ class Profile:
     _options = [
         # (key, datatype, remap, default)
         ("description", "str", None, "no description"),
-        ("restic-path", "str", None, "restic"),
         ("inherit", "list", None, []),
+        ("executable", "list", None, ["restic"]),
         ("command", "list", None, []),
         ("args", "list", None, []),
         ("wait-for-lock", "str", None, None),
         ("cpu-priority", "str", None, None),
         ("io-priority", "str", None, None),
         ("schedule", "str", None, None),
-        ("global-flags", "list", None, []),
         ("notifications", "bool", None, True), # all info errors warning none
         # Convenient restic option aliases
         ("repository", "str", "flag.repo", None),
@@ -136,6 +135,10 @@ class Profile:
                     m_days = {1}
                 elif part == "weekly":
                     w_days = {0}
+                elif part == "daily":
+                    w_days = {0, 1, 2, 3, 4, 5, 6}
+                elif part == "hourly":
+                    next_run = next_run.replace(hour=int(from_time.hour + 1), minute=int(0))
                 elif part[0:3] in weekdays:
                     w_days.add(weekdays.index(part[0:3]))
                 elif len(part.split(":")) == 2:
@@ -162,7 +165,7 @@ class Profile:
         return self.command and (self["repository"] or self["repository-file"])
 
     def get_command(self, cmd_args=[]):
-        args = [self["restic-path"]] + self["global-flags"]
+        args = self["executable"]
         env = {}
 
         if self["password-keyring"]:
@@ -666,10 +669,11 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                             p["name"],
                             p["description"],
                             p["repository"],
-                            f"<a href='/{p['name']}'>snapshots</a> | <a href='/{p['name']}'>check</a> | ...",
+                            f"<a href='/{p['name']}'>run now</a> | <a href='/{p['name']}'>view logs</a>",
+                            f"<a href='/{p['name']}'>snapshots</a> | ...",
                         ]
                     )
-            self.do_respond(200, gen_table(table, ["Name", "Description", "Repository", "Actions"]))
+            self.do_respond(200, gen_table(table, ["Name", "Description", "Repository", "Actions", "Restic"]))
 
         elif not profile:
             self.do_respond(404, "profile not found")

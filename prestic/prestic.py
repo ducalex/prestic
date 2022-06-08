@@ -52,29 +52,28 @@ PROG_BUILD = "$Format:%h$"
 class Profile:
     _options = [
         # (key, datatype, remap, default)
-        ("description", "str", None, "no description"),
         ("inherit", "list", None, []),
-        ("executable", "list", None, ["restic"]),
-        ("command", "list", None, []),
-        ("args", "list", None, []),
-        ("wait-for-lock", "str", None, None),
-        ("cpu-priority", "str", None, None),
-        ("io-priority", "str", None, None),
-        ("schedule", "str", None, None),
-        ("notifications", "bool", None, True), # all info errors warning none
-        # Convenient restic option aliases
+        ("description", "str", None, "no description"),
         ("repository", "str", "flag.repo", None),
-        ("limit-download", "int", "flag.limit-download", None),
-        ("limit-upload", "int", "flag.limit-upload", None),
-        ("verbose", "int", "flag.verbose", None),
-        ("no-cache", "bool", "flag.no-cache", None),
-        ("no-lock", "bool", "flag.no-lock", None),
-        ("json", "bool", "flag.json", None),
-        ("option", "list", "flag.option", None),
-        ("repository-file", "str", "env.RESTIC_REPOSITORY_FILE", None),
+        ("repository-file", "str", "flag.repository-file", None),
         ("password", "str", "env.RESTIC_PASSWORD", None),
         ("password-command", "str", "env.RESTIC_PASSWORD_COMMAND", None),
         ("password-file", "str", "env.RESTIC_PASSWORD_FILE", None),
+        ("password-keyring", "str", None, None),
+        ("executable", "list", None, ["restic"]),
+        ("command", "list", None, []),
+        ("args", "list", None, []),
+        ("schedule", "str", None, None),
+        ("notifications", "bool", None, True),
+        ("wait-for-lock", "str", None, None),
+        ("cpu-priority", "str", None, None),
+        ("io-priority", "str", None, None),
+        ("limit-upload", "size", None, None),
+        ("limit-download", "size", None, None),
+        ("verbose", "int", "flag.verbose", None),
+        ("no-cache", "bool", "flag.no-cache", None),
+        ("no-lock", "bool", "flag.no-lock", None),
+        ("option", "list", "flag.option", None),
         ("cache-dir", "str", "env.RESTIC_CACHE_DIR", None),
         ("key-hint", "str", "env.RESTIC_KEY_HINT", None),
     ]
@@ -106,6 +105,8 @@ class Profile:
             self._properties[key] = shlex.split(value) if type(value) is str else list(value)
         elif datatype == "bool":
             self._properties[key] = value in [True, "true", "1"]
+        elif datatype == "size":  # if unit is not specified, KB is assumed.
+            self._properties[key] = int(value) if str(value).isnumeric() else (parse_size(value) / 1024)
         else:  # if datatype == "str":
             self._properties[key] = str(value)
         if key == "schedule":
@@ -168,13 +169,6 @@ class Profile:
         args = self["executable"]
         env = {}
 
-        if self["password-keyring"]:
-            username = shlex.quote(self["password-keyring"])
-            python = shlex.quote(sys.executable)
-            env["RESTIC_PASSWORD_COMMAND"] = f"{python} -m keyring get {PROG_NAME} {username}"
-            if not keyring:
-                logging.warning(f"keyring module missing, required by profile {self.name}")
-
         for key in self._properties:  # and defaults?
             if key.startswith("env."):
                 env[key[4:]] = self[key]
@@ -185,6 +179,20 @@ class Profile:
                         args += [f"--{key[5:]}"]
                     elif type(val) is str:
                         args += [f"--{key[5:]}={val}"] if val.isalnum() else [f"--{key[5:]}", val]
+
+        if self["password-keyring"]:
+            username = shlex.quote(self["password-keyring"])
+            python = shlex.quote(sys.executable)
+            env["RESTIC_PASSWORD_COMMAND"] = f"{python} -m keyring get {PROG_NAME} {username}"
+            if not keyring:
+                logging.warning(f"keyring module missing, required by profile {self.name}")
+
+        if self["limit-upload"]:
+            args += [f"--limit-upload={self['limit-upload']}"]
+        if self["limit-download"]:
+            args += [f"--limit-download={self['limit-download']}"]
+        if self["limit-upload"] or self["limit-download"]:
+            env["RCLONE_BWLIMIT"] = f"{self['limit-upload'] or 'off'}:{self['limit-download'] or 'off'}"
 
         # Ignore default command if any argument was given
         if cmd_args:
@@ -313,7 +321,7 @@ class BaseHandler:
 
 
 class ServiceHandler(BaseHandler):
-    """ Run in service mode (task scheduler) and output to log files """
+    """Run in service mode (task scheduler) and output to log files"""
 
     def set_status(self, message, busy=False):
         if message != self.status:
@@ -332,7 +340,7 @@ class ServiceHandler(BaseHandler):
         if self.gui:
             if self.gui.HAS_NOTIFICATION:
                 self.gui.notify(message, f"{PROG_NAME}: {title}" if title else PROG_NAME)
-                time.sleep(5) # 0.5s needed for stability, rest to give time for reading
+                time.sleep(5)  # 0.5s needed for stability, rest to give time for reading
             else:
                 logging.info(message)
 
@@ -373,16 +381,16 @@ class ServiceHandler(BaseHandler):
     def proc_webui(self):
         # TO DO: Stop the web server after a period of inactivity (to release memory but also for security)
         self.webui_host = "127.0.0.1"
-        self.webui_port = 8711 # 0
+        self.webui_port = 8711  # 0
         self.webui_url = ""
         self.webui_token = ""
         try:
             WebRequestHandler.profiles = self.profiles
-            time.sleep(0.2) # Wait for the gui to come up so we can show errors
+            time.sleep(0.2)  # Wait for the gui to come up so we can show errors
             self.server = TCPServer((self.webui_host, self.webui_port), WebRequestHandler)
             self.webui_host = self.server.server_address[0]
-            self.webui_port = self.server.server_address[1] # In case we use automatic assignment
-            self.webui_url = f"http://{self.webui_host}:{self.webui_port}/" #  "?token={self.webui_token}"
+            self.webui_port = self.server.server_address[1]  # In case we use automatic assignment
+            self.webui_url = f"http://{self.webui_host}:{self.webui_port}/"  #  "?token={self.webui_token}"
             logging.info(f"webui running at {self.webui_url}")
             self.server.serve_forever()
         except Exception as e:
@@ -450,7 +458,7 @@ class ServiceHandler(BaseHandler):
             log_file = "stdout"
             log_fd = None
 
-        if "backup" in task.command: # and task.verbose < 2:
+        if "backup" in task.command:  # and task.verbose < 2:
             log_filter = re.compile("^unchanged\s/")
         else:
             log_filter = None
@@ -548,13 +556,13 @@ class ServiceHandler(BaseHandler):
 
 
 class TrayIconHandler(ServiceHandler):
-    """ Show a tray icon when running in service mode (task scheduler) """
+    """Show a tray icon when running in service mode (task scheduler)"""
 
     pass
 
 
 class KeyringHandler(BaseHandler):
-    """ Keyring manager (basically a `keyring` clone) """
+    """Keyring manager (basically a `keyring` clone)"""
 
     def run(self, profile, args=[]):
         if len(args) != 2 or args[0] not in ["get", "set", "del"]:
@@ -576,7 +584,7 @@ class KeyringHandler(BaseHandler):
 
 
 class CommandHandler(BaseHandler):
-    """ Run a single command and output to stdout """
+    """Run a single command and output to stdout"""
 
     def run(self, profile_name, args=[]):
         profile = self.profiles.get(profile_name)
@@ -660,7 +668,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             return content
 
         if not profile_name:
-            """ list profiles """
+            """list profiles"""
             table = []
             for p in self.profiles.values():
                 if p["repository"] or p["repository-file"]:
@@ -679,7 +687,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self.do_respond(404, "profile not found")
 
         elif not snapshot_id:
-            """ list snapshots """
+            """list snapshots"""
             proc = profile.run(["snapshots", "--json"], stdout=PIPE)
             snapshots = json.load(proc.stdout)
             if snapshots:
@@ -688,7 +696,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 for s in snapshots:
                     table.append(
                         [
-                            str(s['short_id']),
+                            str(s["short_id"]),
                             str(format_date(s["time"])),
                             str(s["hostname"]),
                             str(s["paths"]),
@@ -700,12 +708,12 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 self.do_respond(200, "No snapshot found")
 
         elif query == "dump":
-            """ serve file """
+            """serve file"""
             proc = profile.run(["dump", snapshot_id, browse_path], stdout=PIPE, text_output=False)
             self.do_respond(200, proc.stdout, mimetypes.guess_type(browse_path))
 
         else:
-            """ list files """
+            """list files"""
             if snapshot_id not in self.snapshots_data:
                 self.snapshots_data[snapshot_id] = files = {}
                 proc = profile.run(["ls", "--json", snapshot_id], stdout=PIPE)
@@ -715,15 +723,11 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                         parent_path = str(PurePosixPath(f["path"]).parent)
                         if parent_path not in files:
                             files[parent_path] = []
-                        files[parent_path].append(
-                            [f["name"], f["type"], f["size"] if "size" in f else "", f["mtime"]]
-                        )
+                        files[parent_path].append([f["name"], f["type"], f["size"] if "size" in f else "", f["mtime"]])
 
             if browse_path not in self.snapshots_data[snapshot_id]:
                 if str(PurePosixPath(browse_path).parent) in self.snapshots_data[snapshot_id]:
-                    proc = profile.run(
-                        ["dump", snapshot_id, browse_path], stdout=PIPE, text_output=False
-                    )
+                    proc = profile.run(["dump", snapshot_id, browse_path], stdout=PIPE, text_output=False)
                     self.do_respond(200, proc.stdout, mimetypes.guess_type(browse_path))
                 else:
                     self.do_respond(404, "path not found")
@@ -734,9 +738,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             table = []
 
             if len(base_path.parts) >= 4:
-                table.append(
-                    [f"{self.icons['dir']} <a href='{base_path.parent}'>..</a>", "", "", ""]
-                )
+                table.append([f"{self.icons['dir']} <a href='{base_path.parent}'>..</a>", "", "", ""])
 
             for name, type, size, mtime in files:
                 nav_link = f"{self.icons.get(type, '')} <a href='{base_path/name}'>{name}</a>"
@@ -776,6 +778,14 @@ def format_date(dt):
     return str(dt)
 
 
+def parse_size(size):
+    if m := re.match(f"^\s*([\d\.]+)\s*([BKMGTP])B?$", f"{size}".upper()):
+        return int(float(m.group(1)) * (2 ** (10 * "BKMGTP".index(m.group(2)))))
+    elif m := re.match(f"^\s*([\d]+)\s*$", f"{size}"):
+        return int(m.group(1))
+    return 0
+
+
 def main(argv=None):
     parser = ArgumentParser(description="Prestic Backup Manager (for restic)")
     parser.add_argument("-c", "--config", default=PROG_FOLDER, help="config file or directory")
@@ -813,4 +823,4 @@ def gui():
 if __name__ == "__main__":
     main()
 
-#TO DO: Icon should become red until a user acknowledges it when an error occurs in a task
+# TO DO: Icon should become red until a user acknowledges it when an error occurs in a task

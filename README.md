@@ -65,8 +65,6 @@ cpu-priority =
 io-priority =
 # (int) Time to wait and retry if the repository is locked (seconds)
 wait-for-lock =
-# (string) path to restic executable (you may add global flags too)
-executable = restic
 
 # (string) repository uri
 repository = sftp:user@domain:folder
@@ -84,6 +82,8 @@ key-hint =
 limit-download =
 # (int) limits uploads to a maximum rate in KiB/s
 limit-upload =
+# (string) path to restic executable (you may add global flags too)
+executable = restic
 # (string|list) default restic command to execute (if none provided):
 command =
 # (list) restic arguments for default command
@@ -98,12 +98,14 @@ cache-dir =
 no-cache = false
 # (bool) do not lock the repo
 no-lock = false
-# (bool) json output
-json = false
 
 # (string) environment variables can be set:
 env.AWS_ACCESS_KEY_ID = VALUE
 env.AWS_SECRET_ACCESS_KEY = VALUE
+
+# (string) other flags can be set:
+flag.json = true
+flag.new-restic-flag = value
 
 ````
 

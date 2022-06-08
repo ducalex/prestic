@@ -37,7 +37,7 @@ except:
 
 
 PROG_NAME = "prestic"
-PROG_FOLDER = Path.home().joinpath("." + PROG_NAME)
+PROG_HOME = Path.home().joinpath("." + PROG_NAME)
 PROG_ICON = (
     b"iVBORw0KGgoAAAANSUhEUgAAACAAAAAgBAMAAACBVGfHAAAAKlBMVEU3My+7UVNMOTPDsF5mRD5sXkuunIJvUUOOdFrQzsvx22rJs5yVhlz19vZPK"
     b"bxAAAAACnRSTlMB+yr6kmH65b/0S/q8VwAAAWpJREFUKM+Vkb9Lw0AUx4+jha6Z7BhKCtlPHUIW01Q6lpiAzoVb0g6FapYMrW20f4AUhGaKotwfEJ"
@@ -104,7 +104,7 @@ class Profile:
         if datatype == "list":
             self._properties[key] = shlex.split(value) if type(value) is str else list(value)
         elif datatype == "bool":
-            self._properties[key] = value in [True, "true", "1"]
+            self._properties[key] = value in [True, "true", "on", "yes", "1"]
         elif datatype == "size":  # if unit is not specified, KB is assumed.
             self._properties[key] = int(value) if str(value).isnumeric() else (parse_size(value) / 1024)
         else:  # if datatype == "str":
@@ -166,7 +166,7 @@ class Profile:
         return self.command and (self["repository"] or self["repository-file"])
 
     def get_command(self, cmd_args=[]):
-        args = self["executable"]
+        args = [*self["executable"]]
         env = {}
 
         for key in self._properties:  # and defaults?
@@ -229,14 +229,9 @@ class Profile:
 
 
 class BaseHandler:
-    def __init__(self, base_path=PROG_FOLDER):
-        self.base_path = Path(base_path)
+    def __init__(self, config_file=None):
+        self.config_file = config_file or Path(PROG_HOME, "config.ini")
         self.running = False
-
-        if not (self.base_path.is_file() or self.base_path.suffix == ".ini"):
-            self.base_path.joinpath("logs").mkdir(parents=True, exist_ok=True)
-            self.base_path.joinpath("cache").mkdir(parents=True, exist_ok=True)
-
         self.load_config()
 
     def load_config(self):
@@ -244,11 +239,12 @@ class BaseHandler:
         status = ConfigParser()
         config.optionxform = lambda x: str(x) if x.startswith("env.") else x.lower()
 
-        if config.read(self.base_path):
-            logging.info(f"configuration loaded from file {self.base_path}")
-        elif config.read(self.base_path.joinpath("config.ini")):
-            logging.info(f"configuration loaded from folder {self.base_path}")
-            status.read(self.base_path.joinpath("status.ini"))
+        if config.read(self.config_file):
+            logging.info(f"configuration loaded from file {self.config_file}")
+        elif config.read(Path(__file__).parent.joinpath("prestic.ini")):
+            logging.info(f"configuration loaded from file prestic.ini")
+
+        status.read(Path(PROG_HOME, "status.ini"))
 
         self.profiles = {
             "default": Profile("default"),
@@ -299,17 +295,15 @@ class BaseHandler:
         if not self.state.has_section(section):
             self.state.add_section(section)
         self.state[section].update({k: str(v) for k, v in values.items()})
-        if write and self.base_path.is_dir():
-            with self.base_path.joinpath("status.ini").open("w") as fp:
+        if write:
+            with Path(PROG_HOME, "status.ini").open("w") as fp:
                 self.state.write(fp)
 
     def dump_profiles(self):
         print(f"\nAvailable profiles:")
         for name, profile in self.profiles.items():
-            repository = profile["repository"] or profile["repository-file"] or None
-            if repository:
-                command = profile.command if profile.command else ""
-                print(f"    > {name} ({profile.description}) [{repository}] {command}")
+            if repository := profile["repository"] or profile["repository-file"] or None:
+                print(f"    > {name} ({profile.description}) [{repository}] {' '.join(profile.command)}")
 
     def run(self, profile=None, args=[]):
         logging.info(f"running {args} on {profile}!")
@@ -357,7 +351,7 @@ class ServiceHandler(BaseHandler):
             try:
                 for task in self.tasks:
                     if not task.next_run:
-                        pass
+                        continue
                     if task.is_pending():  # or 'backup' in task['command']:
                         self.run_task(task)
                     if not next_task:
@@ -390,7 +384,7 @@ class ServiceHandler(BaseHandler):
             self.server = TCPServer((self.webui_host, self.webui_port), WebRequestHandler)
             self.webui_host = self.server.server_address[0]
             self.webui_port = self.server.server_address[1]  # In case we use automatic assignment
-            self.webui_url = f"http://{self.webui_host}:{self.webui_port}/"  #  "?token={self.webui_token}"
+            self.webui_url = f"http://{self.webui_host}:{self.webui_port}/?token={self.webui_token}"
             logging.info(f"webui running at {self.webui_url}")
             self.server.serve_forever()
         except Exception as e:
@@ -418,7 +412,7 @@ class ServiceHandler(BaseHandler):
                 def on_click():
                     log_file = self.state[task.name].get("log_file", "")
                     if log_file:
-                        os_open_url(self.base_path.joinpath("logs", log_file))
+                        os_open_url(Path(PROG_HOME, "logs", log_file))
 
                 return on_click
 
@@ -439,7 +433,7 @@ class ServiceHandler(BaseHandler):
                 icon=icon,
                 menu=pystray.Menu(
                     pystray.MenuItem("Tasks", pystray.Menu(tasks_menu)),
-                    pystray.MenuItem("Open prestic folder", lambda: os_open_url(self.base_path)),
+                    pystray.MenuItem("Open prestic folder", lambda: os_open_url(PROG_HOME)),
                     pystray.MenuItem("Open web interface", lambda: os_open_url(self.webui_url)),
                     pystray.MenuItem("Reload config", lambda: (self.load_config())),
                     pystray.MenuItem("Quit", lambda: self.stop()),
@@ -453,7 +447,7 @@ class ServiceHandler(BaseHandler):
     def run_task(self, task):
         try:
             log_file = f"{time.strftime('%Y.%m.%d_%H.%M')}-{task.name}.txt"
-            log_fd = self.base_path.joinpath("logs", log_file).open("w", encoding="utf-8", errors="replace")
+            log_fd = Path(PROG_HOME, "logs", log_file).open("w", encoding="utf-8", errors="replace")
         except:
             log_file = "stdout"
             log_fd = None
@@ -517,7 +511,7 @@ class ServiceHandler(BaseHandler):
         else:
             status_txt = f"task {task.name} FAILED with exit code: {ret} !"
             if log_file and log_fd:
-                os_open_url(self.base_path.joinpath("logs", log_file))
+                os_open_url(Path(PROG_HOME, "logs", log_file))
 
         self.save_state(task.name, {"last_run": time.time(), "exit_code": ret, "pid": 0})
         self.set_status(status_txt)
@@ -530,6 +524,9 @@ class ServiceHandler(BaseHandler):
         self.server = None
         self.gui = None
         self.errors = []
+
+        Path(PROG_HOME, "cache").mkdir(parents=True, exist_ok=True)
+        Path(PROG_HOME, "logs").mkdir(parents=True, exist_ok=True)
 
         self.save_state("__prestic__", {"pid": os.getpid()})
         self.set_status("service started")
@@ -689,25 +686,33 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         elif not snapshot_id:
             """list snapshots"""
             proc = profile.run(["snapshots", "--json"], stdout=PIPE)
-            snapshots = json.load(proc.stdout)
-            if snapshots:
-                snapshots = sorted(snapshots, key=lambda x: x["time"], reverse=True)
+            if snapshots := json.load(proc.stdout):
+                snapshots = sorted(snapshots, key=lambda x: x["time"])
+                prev_id = None
                 table = []
                 for s in snapshots:
+                    base_url = f"/{profile['name']}/{s['short_id']}"
                     table.append(
                         [
                             str(s["short_id"]),
                             str(format_date(s["time"])),
                             str(s["hostname"]),
                             str(s["paths"]),
-                            f"<a href='/{profile['name']}/{s['short_id']}'>browse</a> | <a href='/{profile['name']}/{s['short_id']}'>diff</a>",
+                            f"<a href='{base_url}'>browse</a> | <a href='{base_url}?diff={prev_id}'>diff</a>",
                         ]
                     )
+                    prev_id = s["short_id"]
+                table.reverse()
                 self.do_respond(200, gen_table(table, ["ID", "Created", "Host", "Paths", "Actions"]))
             else:
                 self.do_respond(200, "No snapshot found")
 
-        elif query == "dump":
+        elif query.startswith("diff="):
+            """show snapshot diff"""
+            proc = profile.run(["diff", snapshot_id, query[5:]], stdout=PIPE, text_output=False)
+            self.do_respond(200, proc.stdout, "text/plain")
+
+        elif query.startswith("dump="):
             """serve file"""
             proc = profile.run(["dump", snapshot_id, browse_path], stdout=PIPE, text_output=False)
             self.do_respond(200, proc.stdout, mimetypes.guess_type(browse_path))
@@ -733,16 +738,16 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                     self.do_respond(404, "path not found")
                 return
 
-            base_path = PurePosixPath("/", profile.name, snapshot_id, browse_path[1:])
+            base_url = PurePosixPath("/", profile.name, snapshot_id, browse_path[1:])
             files = sorted(self.snapshots_data[snapshot_id][browse_path], key=lambda x: x[1])
             table = []
 
-            if len(base_path.parts) >= 4:
-                table.append([f"{self.icons['dir']} <a href='{base_path.parent}'>..</a>", "", "", ""])
+            if len(base_url.parts) >= 4:
+                table.append([f"{self.icons['dir']} <a href='{base_url.parent}'>..</a>", "", "", ""])
 
             for name, type, size, mtime in files:
-                nav_link = f"{self.icons.get(type, '')} <a href='{base_path/name}'>{name}</a>"
-                down_link = f"<a href='{base_path/name}?dump'>Download</a>"
+                nav_link = f"{self.icons.get(type, '')} <a href='{base_url/name}'>{name}</a>"
+                down_link = f"<a href='{base_url/name}?dump=1'>Download</a>"
                 table.append([nav_link, str(size), format_date(mtime), down_link])
 
             self.do_respond(200, gen_table(table, ["Name", "Size", "Date modified", "Download"]))
@@ -788,7 +793,7 @@ def parse_size(size):
 
 def main(argv=None):
     parser = ArgumentParser(description="Prestic Backup Manager (for restic)")
-    parser.add_argument("-c", "--config", default=PROG_FOLDER, help="config file or directory")
+    parser.add_argument("-c", "--config", default=None, help="config file")
     parser.add_argument("-p", "--profile", default="default", help="profile to use")
     parser.add_argument("--service", const=True, action="store_const", help="start service")
     parser.add_argument("--gui", const=True, action="store_const", help="start service")

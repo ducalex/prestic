@@ -321,22 +321,9 @@ class ServiceHandler(BaseHandler):
         if message != self.status:
             logging.info(f"status: {message}")
             self.status = message
-            if self.gui:
-                self.gui.title = "Prestic backup manager\n" + (message or "idle")
-                icon = self.icons["busy" if busy else "norm"]
-                if self.gui.icon is not icon:
-                    self.gui.icon = icon
-                # This can cause issues if the menu is currently open
-                # but there is no way to know if it is...
-                self.gui.update_menu()
 
     def notify(self, message, title=None):
-        if self.gui:
-            if self.gui.HAS_NOTIFICATION:
-                self.gui.notify(message, f"{PROG_NAME}: {title}" if title else PROG_NAME)
-                time.sleep(5)  # 0.5s needed for stability, rest to give time for reading
-            else:
-                logging.info(message)
+        pass
 
     def proc_scheduler(self):
         # TO DO: Handle missed tasks more gracefully (ie computer sleep). We shouldn't run a
@@ -390,59 +377,6 @@ class ServiceHandler(BaseHandler):
         except Exception as e:
             logging.error(f"webui error: {type(e).__name__} '{e}'")
             self.notify(str(e), "Webui couldn't start")
-
-    def proc_gui(self):
-        try:
-            icon = Image.open(BytesIO(b64decode(PROG_ICON))).convert("RGBA")
-            self.icons = {
-                "norm": icon,
-                "busy": Image.alpha_composite(Image.new("RGBA", icon.size, (255, 0, 255, 255)), icon),
-                "fail": Image.alpha_composite(Image.new("RGBA", icon.size, (255, 0, 0, 255)), icon),
-            }
-
-            def on_run_now_click(task):
-                def on_click():
-                    if task["notifications"]:
-                        self.notify(f"{task.name} will run next")
-                    task.next_run = datetime.now()
-
-                return on_click
-
-            def on_log_click(task):
-                def on_click():
-                    log_file = self.state[task.name].get("log_file", "")
-                    if log_file:
-                        os_open_url(Path(PROG_HOME, "logs", log_file))
-
-                return on_click
-
-            def tasks_menu():
-                for task in self.tasks:
-                    task_menu = pystray.Menu(
-                        pystray.MenuItem(task.description, on_log_click(task)),
-                        pystray.Menu.SEPARATOR,
-                        pystray.MenuItem(f"Next run: {time_diff(task.next_run)}", lambda: 1),
-                        pystray.MenuItem(f"Last run: {time_diff(task.last_run)}", on_log_click(task)),
-                        pystray.Menu.SEPARATOR,
-                        pystray.MenuItem("Run Now", on_run_now_click(task)),
-                    )
-                    yield pystray.MenuItem(task.name, task_menu)
-
-            self.gui = pystray.Icon(
-                name=PROG_NAME,
-                icon=icon,
-                menu=pystray.Menu(
-                    pystray.MenuItem("Tasks", pystray.Menu(tasks_menu)),
-                    pystray.MenuItem("Open web interface", lambda: os_open_url(self.webui_url)),
-                    pystray.MenuItem("Open prestic folder", lambda: os_open_url(PROG_HOME)),
-                    pystray.MenuItem("Reload config", lambda: (self.load_config())),
-                    pystray.MenuItem("Quit", lambda: self.stop()),
-                ),
-            )
-            self.gui.run()
-        except Exception as e:
-            logging.warning("pystray couldn't be initialized, gui features won't be available")
-            logging.warning(f"proc_gui error: {type(e).__name__} '{e}'")
 
     def run_task(self, task):
         try:
@@ -522,7 +456,6 @@ class ServiceHandler(BaseHandler):
         self.running = True
         self.status = None
         self.server = None
-        self.gui = None
         self.errors = []
 
         Path(PROG_HOME, "cache").mkdir(parents=True, exist_ok=True)
@@ -534,18 +467,14 @@ class ServiceHandler(BaseHandler):
         Thread(target=self.proc_scheduler, name="scheduler").start()
         Thread(target=self.proc_webui, name="webui").start()
 
-        # if gui_enabled:
-        self.proc_gui()
-
-        while self.running:
-            time.sleep(1)
+        if type(self) is ServiceHandler:
+            while self.running:
+                time.sleep(60)
 
     def stop(self, rc=0):
         logging.info("shutting down...")
-        self.running = False
         try:
-            if self.gui:
-                self.gui.visible = False
+            self.running = False
             if self.server:
                 self.server.shutdown()
         finally:
@@ -555,7 +484,79 @@ class ServiceHandler(BaseHandler):
 class TrayIconHandler(ServiceHandler):
     """Show a tray icon when running in service mode (task scheduler)"""
 
-    pass
+    def set_status(self, message, busy=False):
+        if message != self.status:
+            self.gui.title = "Prestic backup manager\n" + (message or "idle")
+            icon = self.icons["busy" if busy else "norm"]
+            if self.gui.icon is not icon:
+                self.gui.icon = icon
+            # This can cause issues if the menu is currently open
+            # but there is no way to know if it is...
+            self.gui.update_menu()
+        super().set_status(message, busy)
+
+    def notify(self, message, title=None):
+        if self.gui.HAS_NOTIFICATION:
+            self.gui.notify(message, f"{PROG_NAME}: {title}" if title else PROG_NAME)
+            time.sleep(5)  # 0.5s needed for stability, rest to give time for reading
+
+    def run(self, profile, args=[]):
+        try:
+            icon = Image.open(BytesIO(b64decode(PROG_ICON))).convert("RGBA")
+            self.icons = {
+                "norm": icon,
+                "busy": Image.alpha_composite(Image.new("RGBA", icon.size, (255, 0, 255, 255)), icon),
+                "fail": Image.alpha_composite(Image.new("RGBA", icon.size, (255, 0, 0, 255)), icon),
+            }
+
+            def on_run_now_click(task):
+                def on_click():
+                    if task["notifications"]:
+                        self.notify(f"{task.name} will run next")
+                    task.next_run = datetime.now()
+
+                return on_click
+
+            def on_log_click(task):
+                def on_click():
+                    log_file = self.state[task.name].get("log_file", "")
+                    if log_file:
+                        os_open_url(Path(PROG_HOME, "logs", log_file))
+
+                return on_click
+
+            def tasks_menu():
+                for task in self.tasks:
+                    task_menu = pystray.Menu(
+                        pystray.MenuItem(task.description, on_log_click(task)),
+                        pystray.Menu.SEPARATOR,
+                        pystray.MenuItem(f"Next run: {time_diff(task.next_run)}", lambda: 1),
+                        pystray.MenuItem(f"Last run: {time_diff(task.last_run)}", on_log_click(task)),
+                        pystray.Menu.SEPARATOR,
+                        pystray.MenuItem("Run Now", on_run_now_click(task)),
+                    )
+                    yield pystray.MenuItem(task.name, task_menu)
+
+            self.gui = pystray.Icon(
+                name=PROG_NAME,
+                icon=icon,
+                menu=pystray.Menu(
+                    pystray.MenuItem("Tasks", pystray.Menu(tasks_menu)),
+                    pystray.MenuItem("Open web interface", lambda: os_open_url(self.webui_url)),
+                    pystray.MenuItem("Open prestic folder", lambda: os_open_url(PROG_HOME)),
+                    pystray.MenuItem("Reload config", lambda: (self.load_config())),
+                    pystray.MenuItem("Quit", lambda: self.stop()),
+                ),
+            )
+            super().run(profile, args)
+            self.gui.run()
+        except Exception as e:
+            logging.warning("pystray (gui) couldn't be initialized...")
+            logging.warning(f"proc_gui error: {type(e).__name__} '{e}'")
+
+    def stop(self, rc=0):
+        self.gui.visible = False
+        super().stop(rc)
 
 
 class KeyringHandler(BaseHandler):
@@ -704,7 +705,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                     )
                     prev_id = s["short_id"]
                 table.reverse()
-                self.do_respond(200, gen_table(table, ["ID", "Created", "Host", "Tags", "Paths", "Actions"]))
+                self.do_respond(200, gen_table(table, ["ID", "Time", "Host", "Tags", "Paths", "Actions"]))
             else:
                 self.do_respond(200, "No snapshot found")
 

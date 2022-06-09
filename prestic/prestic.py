@@ -433,8 +433,8 @@ class ServiceHandler(BaseHandler):
                 icon=icon,
                 menu=pystray.Menu(
                     pystray.MenuItem("Tasks", pystray.Menu(tasks_menu)),
-                    pystray.MenuItem("Open prestic folder", lambda: os_open_url(PROG_HOME)),
                     pystray.MenuItem("Open web interface", lambda: os_open_url(self.webui_url)),
+                    pystray.MenuItem("Open prestic folder", lambda: os_open_url(PROG_HOME)),
                     pystray.MenuItem("Reload config", lambda: (self.load_config())),
                     pystray.MenuItem("Quit", lambda: self.stop()),
                 ),
@@ -697,13 +697,14 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                             str(s["short_id"]),
                             str(format_date(s["time"])),
                             str(s["hostname"]),
+                            str(s["tags"]),
                             str(s["paths"]),
                             f"<a href='{base_url}'>browse</a> | <a href='{base_url}?diff={prev_id}'>diff</a>",
                         ]
                     )
                     prev_id = s["short_id"]
                 table.reverse()
-                self.do_respond(200, gen_table(table, ["ID", "Created", "Host", "Paths", "Actions"]))
+                self.do_respond(200, gen_table(table, ["ID", "Created", "Host", "Tags", "Paths", "Actions"]))
             else:
                 self.do_respond(200, "No snapshot found")
 
@@ -769,11 +770,12 @@ def time_diff(time, from_time=None):
 
 def os_open_url(path):
     if sys.platform == "win32":
-        Popen(["start", str(Path(path))], shell=True).wait()
+        print(str(path))
+        Popen(["start", str(path)], shell=True).wait()
     elif sys.platform == "darwin":
-        Popen(["open", str(Path(path))], shell=True).wait()
+        Popen(["open", str(path)], shell=True).wait()
     else:
-        Popen(["xdg-open", str(Path(path))]).wait()
+        Popen(["xdg-open", str(path)]).wait()
 
 
 def format_date(dt):

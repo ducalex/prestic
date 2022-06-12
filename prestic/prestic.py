@@ -509,31 +509,27 @@ class TrayIconHandler(ServiceHandler):
                 "fail": Image.alpha_composite(Image.new("RGBA", icon.size, (255, 0, 0, 255)), icon),
             }
 
-            def on_run_now_click(task):
-                def on_click():
-                    if task["notifications"]:
-                        self.notify(f"{task.name} will run next")
-                    task.next_run = datetime.now()
+            def make_cb(fn, arg): # Binds fn to arg
+                return lambda: fn(arg)
 
-                return on_click
+            def on_run_now_click(task):
+                if task["notifications"]:
+                    self.notify(f"{task.name} will run next")
+                task.next_run = datetime.now()
 
             def on_log_click(task):
-                def on_click():
-                    log_file = self.state[task.name].get("log_file", "")
-                    if log_file:
-                        os_open_url(Path(PROG_HOME, "logs", log_file))
-
-                return on_click
+                if log_file := self.state[task.name].get("log_file", ""):
+                    os_open_url(Path(PROG_HOME, "logs", log_file))
 
             def tasks_menu():
                 for task in self.tasks:
                     task_menu = pystray.Menu(
-                        pystray.MenuItem(task.description, on_log_click(task)),
+                        pystray.MenuItem(task.description, make_cb(on_log_click, task)),
                         pystray.Menu.SEPARATOR,
                         pystray.MenuItem(f"Next run: {time_diff(task.next_run)}", lambda: 1),
-                        pystray.MenuItem(f"Last run: {time_diff(task.last_run)}", on_log_click(task)),
+                        pystray.MenuItem(f"Last run: {time_diff(task.last_run)}", make_cb(on_log_click, task)),
                         pystray.Menu.SEPARATOR,
-                        pystray.MenuItem("Run Now", on_run_now_click(task)),
+                        pystray.MenuItem("Run Now", make_cb(on_run_now_click, task)),
                     )
                     yield pystray.MenuItem(task.name, task_menu)
 

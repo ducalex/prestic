@@ -361,29 +361,26 @@ class ServiceHandler(BaseHandler):
 
     def proc_webui(self):
         # TO DO: Stop the web server after a period of inactivity (to release memory but also for security)
-        self.webui_host = "127.0.0.1"
-        self.webui_port = 8711  # 0
-        self.webui_url = ""
-        self.webui_token = ""
+        time.sleep(1)  # Wait for the gui to come up so we can show errors
         try:
             WebRequestHandler.profiles = self.profiles
-            time.sleep(0.2)  # Wait for the gui to come up so we can show errors
-            self.server = TCPServer((self.webui_host, self.webui_port), WebRequestHandler)
-            self.webui_host = self.server.server_address[0]
-            self.webui_port = self.server.server_address[1]  # In case we use automatic assignment
-            self.webui_url = f"http://{self.webui_host}:{self.webui_port}/?token={self.webui_token}"
+            WebRequestHandler.token = ""
+            self.webui_server = TCPServer(self.webui_listen, WebRequestHandler)
+            self.webui_listen = self.webui_server.server_address  # In case we use automatic assignment
+            self.webui_url = f"http://{self.webui_listen[0]}:{self.webui_listen[1]}/?token={WebRequestHandler.token}"
             logging.info(f"webui running at {self.webui_url}")
-            self.server.serve_forever()
+            self.webui_server.serve_forever()
         except Exception as e:
             logging.error(f"webui error: {type(e).__name__} '{e}'")
             self.notify(str(e), "Webui couldn't start")
 
     def run_task(self, task):
         try:
-            log_file = f"{time.strftime('%Y.%m.%d_%H.%M')}-{task.name}.txt"
-            log_fd = Path(PROG_HOME, "logs", log_file).open("w", encoding="utf-8", errors="replace")
+            log_file = Path(PROG_HOME, "logs", f"{time.strftime('%Y.%m.%d_%H.%M')}-{task.name}.txt")
+            log_file.parent().mkdir(parents=True, exist_ok=True)
+            log_fd = log_file.open("w", encoding="utf-8", errors="replace")
         except:
-            log_file = "stdout"
+            log_file = Path("-")
             log_fd = None
 
         if "backup" in task.command:  # and task.verbose < 2:
@@ -391,7 +388,7 @@ class ServiceHandler(BaseHandler):
         else:
             log_filter = None
 
-        self.save_state(task.name, {"started": time.time(), "log_file": log_file})
+        self.save_state(task.name, {"started": time.time(), "log_file": log_file.name})
         self.set_status(f"running task {task.name}", True)
         if task["notifications"]:
             self.notify(f"Running task {task.name}")
@@ -444,7 +441,7 @@ class ServiceHandler(BaseHandler):
             status_txt = f"task {task.name} finished with some warnings..."
         else:
             status_txt = f"task {task.name} FAILED with exit code: {ret} !"
-            if log_file and log_fd:
+            if log_file.exists():
                 os_open_url(Path(PROG_HOME, "logs", log_file))
 
         self.save_state(task.name, {"last_run": time.time(), "exit_code": ret, "pid": 0})
@@ -453,13 +450,11 @@ class ServiceHandler(BaseHandler):
             self.notify(("\n".join(output[-4:]))[-220:].strip(), status_txt)
 
     def run(self, profile, args=[]):
+        self.webui_listen = ("127.0.0.1", 8711)  # 0
+        self.webui_server = None
+        self.webui_url = None
         self.running = True
         self.status = None
-        self.server = None
-        self.errors = []
-
-        Path(PROG_HOME, "cache").mkdir(parents=True, exist_ok=True)
-        Path(PROG_HOME, "logs").mkdir(parents=True, exist_ok=True)
 
         self.save_state("__prestic__", {"pid": os.getpid()})
         self.set_status("service started")
@@ -475,8 +470,8 @@ class ServiceHandler(BaseHandler):
         logging.info("shutting down...")
         try:
             self.running = False
-            if self.server:
-                self.server.shutdown()
+            if self.webui_server:
+                self.webui_server.shutdown()
         finally:
             os._exit(rc)
 
@@ -524,7 +519,7 @@ class TrayIconHandler(ServiceHandler):
             def tasks_menu():
                 for task in self.tasks:
                     task_menu = pystray.Menu(
-                        pystray.MenuItem(task.description, make_cb(on_log_click, task)),
+                        pystray.MenuItem(task.description, lambda: 1),
                         pystray.Menu.SEPARATOR,
                         pystray.MenuItem(f"Next run: {time_diff(task.next_run)}", lambda: 1),
                         pystray.MenuItem(f"Last run: {time_diff(task.last_run)}", make_cb(on_log_click, task)),
@@ -767,7 +762,6 @@ def time_diff(time, from_time=None):
 
 def os_open_url(path):
     if sys.platform == "win32":
-        print(str(path))
         Popen(["start", str(path)], shell=True).wait()
     elif sys.platform == "darwin":
         Popen(["open", str(path)], shell=True).wait()

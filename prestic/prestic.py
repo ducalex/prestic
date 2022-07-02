@@ -702,7 +702,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         elif query.startswith("diff="):
             """show snapshot diff"""
-            proc = profile.run(["diff", snapshot_id, query[5:]], stdout=PIPE, text_output=False)
+            proc = profile.run(["diff", query[5:], snapshot_id], stdout=PIPE, text_output=False)
             self.do_respond(200, proc.stdout, "text/plain")
 
         elif query.startswith("dump="):

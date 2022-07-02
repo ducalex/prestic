@@ -363,11 +363,12 @@ class ServiceHandler(BaseHandler):
         # TO DO: Stop the web server after a period of inactivity (to release memory but also for security)
         time.sleep(1)  # Wait for the gui to come up so we can show errors
         try:
+            # WebRequestHandler.service = self
             WebRequestHandler.profiles = self.profiles
-            WebRequestHandler.token = ""
             self.webui_server = TCPServer(self.webui_listen, WebRequestHandler)
             self.webui_listen = self.webui_server.server_address  # In case we use automatic assignment
-            self.webui_url = f"http://{self.webui_listen[0]}:{self.webui_listen[1]}/?token={WebRequestHandler.token}"
+            self.webui_token = ""
+            self.webui_url = f"http://{self.webui_listen[0]}:{self.webui_listen[1]}/" # "?token={self.webui_token}"
             logging.info(f"webui running at {self.webui_url}")
             self.webui_server.serve_forever()
         except Exception as e:
@@ -504,7 +505,7 @@ class TrayIconHandler(ServiceHandler):
                 "fail": Image.alpha_composite(Image.new("RGBA", icon.size, (255, 0, 0, 255)), icon),
             }
 
-            def make_cb(fn, arg): # Binds fn to arg
+            def make_cb(fn, arg):  # Binds fn to arg
                 return lambda: fn(arg)
 
             def on_run_now_click(task):
@@ -522,7 +523,9 @@ class TrayIconHandler(ServiceHandler):
                         pystray.MenuItem(task.description, lambda: 1),
                         pystray.Menu.SEPARATOR,
                         pystray.MenuItem(f"Next run: {time_diff(task.next_run)}", lambda: 1),
-                        pystray.MenuItem(f"Last run: {time_diff(task.last_run)}", make_cb(on_log_click, task)),
+                        pystray.MenuItem(
+                            f"Last run: {time_diff(task.last_run)}", make_cb(on_log_click, task)
+                        ),
                         pystray.Menu.SEPARATOR,
                         pystray.MenuItem("Run Now", make_cb(on_run_now_click, task)),
                     )
@@ -592,18 +595,20 @@ class CommandHandler(BaseHandler):
 class WebRequestHandler(BaseHTTPRequestHandler):
     """Handler"""
 
-    icons = {"file": "&#128196;", "dir": "&#128193;", "snapshot": "&#128190;"}
     template = """
         <html>
         <head>
             <style>
-                h2 {text-align:center;}
+                h1,h2,h3 {text-align:center; margin: 0.5em;}
                 pre {width: min-content;}
                 table,pre {margin: 0 auto;}
                 table {border-collapse: collapse; }
                 thead th {text-align: left; font-weight: bold;}
                 tbody tr:hover {background: #eee;}
                 table, td, tr, th { border: 1px solid black; padding: .1em .5em;}
+                a.download:before {content: '💾'}
+                a.file:before {content: '📄'}
+                a.dir:before {content: '📁'}
             </style>
         </head>
         <body>%s</body>
@@ -611,16 +616,95 @@ class WebRequestHandler(BaseHTTPRequestHandler):
     """
 
     profiles = {}
-    snapshots = {}
-    snapshots_data = {}
+    snapshots_cache = {}
 
-    def do_respond(self, code, content, content_type="text/html"):
+    def gen_table(self, rows, header=None):
+        content = "<table>"
+        if header:
+            content += "<thead><tr><th>" + ("</th><th>".join(header)) + "</th></tr></thead>"
+        content += "<tbody>"
+        for row in rows:
+            content += "<tr><td>" + ("</td><td>".join(row)) + "</td></tr>"
+        content += "</tbody></table>"
+        return content
+
+    def route_home(self):
+        table = []
+        for p in self.profiles.values():
+            if p["repository"] or p["repository-file"]:
+                browse_links = f"<a href='/'>manage</a> | <a href='/{p['name']}'>logs</a> | <a href='/{p['name']}'>snapshots</a>"
+                table.append([p["name"], p["description"], p["repository"], browse_links])
+        header = f"<h3>Service status: Idle</h3>"
+        return (200, header + self.gen_table(table, ["Name", "Description", "Repository", "Actions"]))
+
+    def route_snapshots(self, profile_name):
+        if not (profile := self.profiles.get(profile_name)):
+            return (404, "Profile not found")
+        if not (snapshots := json.load(profile.run(["snapshots", "--json"], stdout=PIPE).stdout)):
+            return (404, "No snapshot found")
+        prev_id = None
+        table = []
+        for s in sorted(snapshots, key=lambda x: x["time"]):
+            links = f"<a href='/{profile.name}/browse/{s['short_id']}/'>browse</a> | <a href='/{profile.name}/diff/{prev_id}..{s['short_id']}'>diff</a>"
+            table.append([s["short_id"], format_date(s["time"]), str(s["hostname"]), str(s["tags"]), str(s["paths"]), links])
+            prev_id = s["short_id"]
+        table.reverse()
+        return (200, self.gen_table(table, ["ID", "Time", "Host", "Tags", "Paths", "Actions"]))
+
+    def route_diff(self, profile_name, snapshot1, snapshot2):
+        if not (profile := self.profiles.get(profile_name)):
+            return (404, "Profile not found")
+        proc = profile.run(["diff", snapshot1, snapshot2], stdout=PIPE, text_output=False)
+        return (200, proc.stdout, "text/plain")
+
+    def route_download(self, profile_name, snapshot_id, browse_path):
+        if not (profile := self.profiles.get(profile_name)):
+            return (404, "Profile not found")
+        proc = profile.run(["dump", snapshot_id, browse_path], stdout=PIPE, text_output=False)
+        return (200, proc.stdout, mimetypes.guess_type(browse_path))
+
+    def route_browse(self, profile_name, snapshot_id, browse_path=None):
+        if not (profile := self.profiles.get(profile_name)):
+            return (404, "Profile not found")
+
+        path = str(PurePosixPath(browse_path or "/")).strip("/")
+
+        if snapshot_id not in self.snapshots_cache:
+            self.snapshots_cache[snapshot_id] = files = {}
+            for line in profile.run(["ls", "--json", snapshot_id], stdout=PIPE).stdout:
+                f = json.loads(line)
+                if f and f["struct_type"] == "node":
+                    parent_path = str(PurePosixPath(f["path"]).parent).strip("/")
+                    node_path = str(PurePosixPath(f["path"])).strip("/")
+                    if f["type"] == "dir" and node_path not in files:
+                        files[node_path] = []
+                    if parent_path not in files:
+                        files[parent_path] = []
+                    files[parent_path].append([f["name"], f["type"], f["size"] if "size" in f else "", f["mtime"]])
+
+        if path not in self.snapshots_cache[snapshot_id]:
+            return (404, "Path not found")
+
+        files = sorted(self.snapshots_cache[snapshot_id][path], key=lambda x: x[1])
+        table = []
+
+        if len(browse_path) > 0:
+            table.append([f"<a class='dir' href='/{profile.name}/browse/{snapshot_id}/{path}/..'>..</a>", "", "", ""])
+
+        for name, type, size, mtime in files:
+            dl_url = f"/{profile.name}/download/{snapshot_id}/{path}/{name}"
+            nav_url = f"/{profile.name}/browse/{snapshot_id}/{path}/{name}" if type == 'dir' else dl_url
+            table.append([f"<a class='{type}' href='{nav_url}'>{name}</a>", str(size), format_date(mtime), f"<a href='{dl_url}'>Download</a>"])
+
+        return (200, self.gen_table(table, ["Name", "Size", "Date modified", "Download"]))
+
+    def respond(self, code, content, content_type="text/html; charset=utf-8"):
         self.send_response(code)
         self.send_header("Content-type", content_type)
         self.end_headers()
         if type(content) is str:
             segments = []
-            path = PurePosixPath(self.path)
+            path = PurePosixPath(urllib.parse.unquote(self.path))
             while str(path) != "/":
                 segments.append(f"<a href='{path}'>{path.name}</a>")
                 path = path.parent
@@ -630,120 +714,25 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         elif type(content) is bytes:
             self.wfile.write(content)
         else:
-            while True:
-                data = content.read(64 * 1024)
-                if not data:
-                    break
+            while data := content.read(64 * 1024):
                 self.wfile.write(data)
 
     def do_GET(self):
-        (scheme, netloc, path, query, fragment) = urllib.parse.urlsplit(self.path)
-        path = PurePosixPath("/", urllib.parse.unquote(path))
+        routes = [
+            (r"^([^/]+)/diff/([a-z0-9]{6,})\.\.([a-z0-9]{6,})$", self.route_diff),  # Browse files in snapshot
+            (r"^([^/]+)/download/([a-z0-9]{6,})(/.*)$", self.route_download),  # Download path in snapshot
+            (r"^([^/]+)/browse/([a-z0-9]{6,})(|/.*)$", self.route_browse),  # Browse files in snapshot
+            (r"^([^/]+)$", self.route_snapshots),  # list snapshots
+            (r"^$", self.route_home),  # list profiles
+        ]
 
-        profile_name = path.parts[1] if len(path.parts) > 1 else ""
-        snapshot_id = path.parts[2] if len(path.parts) > 2 else ""
-        browse_path = str(PurePosixPath("/", *(path.parts[3:] if len(path.parts) > 3 else [""])))
+        path = urllib.parse.unquote(self.path).strip("/")
 
-        profile = self.profiles.get(profile_name)
-
-        def gen_table(rows, header=None):
-            content = "<table>"
-            if header:
-                content += "<thead><tr><th>" + ("</th><th>".join(header)) + "</th></tr></thead>"
-            content += "<tbody>"
-            for row in rows:
-                content += "<tr><td>" + ("</td><td>".join(row)) + "</td></tr>"
-            content += "</tbody></table>"
-            return content
-
-        if not profile_name:
-            """list profiles"""
-            table = []
-            for p in self.profiles.values():
-                if p["repository"] or p["repository-file"]:
-                    table.append(
-                        [
-                            p["name"],
-                            p["description"],
-                            p["repository"],
-                            f"<a href='/{p['name']}'>run now</a> | <a href='/{p['name']}'>view logs</a>",
-                            f"<a href='/{p['name']}'>snapshots</a> | ...",
-                        ]
-                    )
-            self.do_respond(200, gen_table(table, ["Name", "Description", "Repository", "Actions", "Restic"]))
-
-        elif not profile:
-            self.do_respond(404, "profile not found")
-
-        elif not snapshot_id:
-            """list snapshots"""
-            proc = profile.run(["snapshots", "--json"], stdout=PIPE)
-            if snapshots := json.load(proc.stdout):
-                snapshots = sorted(snapshots, key=lambda x: x["time"])
-                prev_id = None
-                table = []
-                for s in snapshots:
-                    base_url = f"/{profile['name']}/{s['short_id']}"
-                    table.append(
-                        [
-                            str(s["short_id"]),
-                            str(format_date(s["time"])),
-                            str(s["hostname"]),
-                            str(s["tags"]),
-                            str(s["paths"]),
-                            f"<a href='{base_url}'>browse</a> | <a href='{base_url}?diff={prev_id}'>diff</a>",
-                        ]
-                    )
-                    prev_id = s["short_id"]
-                table.reverse()
-                self.do_respond(200, gen_table(table, ["ID", "Time", "Host", "Tags", "Paths", "Actions"]))
-            else:
-                self.do_respond(200, "No snapshot found")
-
-        elif query.startswith("diff="):
-            """show snapshot diff"""
-            proc = profile.run(["diff", query[5:], snapshot_id], stdout=PIPE, text_output=False)
-            self.do_respond(200, proc.stdout, "text/plain")
-
-        elif query.startswith("dump="):
-            """serve file"""
-            proc = profile.run(["dump", snapshot_id, browse_path], stdout=PIPE, text_output=False)
-            self.do_respond(200, proc.stdout, mimetypes.guess_type(browse_path))
-
-        else:
-            """list files"""
-            if snapshot_id not in self.snapshots_data:
-                self.snapshots_data[snapshot_id] = files = {}
-                proc = profile.run(["ls", "--json", snapshot_id], stdout=PIPE)
-                for line in proc.stdout:
-                    f = json.loads(line)
-                    if f and f["struct_type"] == "node":
-                        parent_path = str(PurePosixPath(f["path"]).parent)
-                        if parent_path not in files:
-                            files[parent_path] = []
-                        files[parent_path].append([f["name"], f["type"], f["size"] if "size" in f else "", f["mtime"]])
-
-            if browse_path not in self.snapshots_data[snapshot_id]:
-                if str(PurePosixPath(browse_path).parent) in self.snapshots_data[snapshot_id]:
-                    proc = profile.run(["dump", snapshot_id, browse_path], stdout=PIPE, text_output=False)
-                    self.do_respond(200, proc.stdout, mimetypes.guess_type(browse_path))
-                else:
-                    self.do_respond(404, "path not found")
+        for route_path, route_action in routes:
+            if m := re.match(route_path, path):
+                self.respond(*route_action(*m.groups()))
                 return
-
-            base_url = PurePosixPath("/", profile.name, snapshot_id, browse_path[1:])
-            files = sorted(self.snapshots_data[snapshot_id][browse_path], key=lambda x: x[1])
-            table = []
-
-            if len(base_url.parts) >= 4:
-                table.append([f"{self.icons['dir']} <a href='{base_url.parent}'>..</a>", "", "", ""])
-
-            for name, type, size, mtime in files:
-                nav_link = f"{self.icons.get(type, '')} <a href='{base_url/name}'>{name}</a>"
-                down_link = f"<a href='{base_url/name}?dump=1'>Download</a>"
-                table.append([nav_link, str(size), format_date(mtime), down_link])
-
-            self.do_respond(200, gen_table(table, ["Name", "Size", "Date modified", "Download"]))
+        self.respond(404, "Not found")
 
 
 def time_diff(time, from_time=None):

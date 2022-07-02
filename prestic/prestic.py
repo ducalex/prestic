@@ -377,7 +377,7 @@ class ServiceHandler(BaseHandler):
     def run_task(self, task):
         try:
             log_file = Path(PROG_HOME, "logs", f"{time.strftime('%Y.%m.%d_%H.%M')}-{task.name}.txt")
-            log_file.parent().mkdir(parents=True, exist_ok=True)
+            log_file.parent.mkdir(parents=True, exist_ok=True)
             log_fd = log_file.open("w", encoding="utf-8", errors="replace")
         except:
             log_file = Path("-")

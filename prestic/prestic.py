@@ -37,7 +37,6 @@ except:
 
 
 PROG_NAME = "prestic"
-PROG_HOME = Path.home().joinpath("." + PROG_NAME)
 PROG_ICON = (
     b"iVBORw0KGgoAAAANSUhEUgAAACAAAAAgBAMAAACBVGfHAAAAKlBMVEU3My+7UVNMOTPDsF5mRD5sXkuunIJvUUOOdFrQzsvx22rJs5yVhlz19vZPK"
     b"bxAAAAACnRSTlMB+yr6kmH65b/0S/q8VwAAAWpJREFUKM+Vkb9Lw0AUx4+jha6Z7BhKCtlPHUIW01Q6lpiAzoVb0g6FapYMrW20f4AUhGaKotwfEJ"
@@ -47,6 +46,11 @@ PROG_ICON = (
     b"lyhfg5KlLoU07i5XcXFSqBnIOdESTDG43mwBfAscKzqcO9nfbWAn8fGL3D+Z8E1K0+/AZb2itxu6ZQTAAAAAElFTkSuQmCC"
 )
 PROG_BUILD = "$Format:%h$"
+
+if sys.platform == "win32" and Path(os.getenv('APPDATA')).exists():
+    PROG_HOME = Path(os.getenv('APPDATA')).joinpath(PROG_NAME)
+else:
+    PROG_HOME = Path.home().joinpath("." + PROG_NAME)
 
 
 class Profile:
@@ -231,6 +235,7 @@ class Profile:
 class BaseHandler:
     def __init__(self, config_file=None):
         self.config_file = config_file or Path(PROG_HOME, "config.ini")
+        self.config_file.parent.mkdir(exist_ok=True)
         self.running = False
         self.load_config()
 

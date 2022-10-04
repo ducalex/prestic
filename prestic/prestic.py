@@ -47,8 +47,8 @@ PROG_ICON = (
 )
 PROG_BUILD = "$Format:%h$"
 
-if sys.platform == "win32" and Path(os.getenv('APPDATA')).exists():
-    PROG_HOME = Path(os.getenv('APPDATA')).joinpath(PROG_NAME)
+if sys.platform == "win32" and Path(os.getenv("APPDATA")).exists():
+    PROG_HOME = Path(os.getenv("APPDATA")).joinpath(PROG_NAME)
 else:
     PROG_HOME = Path.home().joinpath("." + PROG_NAME)
 
@@ -373,7 +373,7 @@ class ServiceHandler(BaseHandler):
             self.webui_server = TCPServer(self.webui_listen, WebRequestHandler)
             self.webui_listen = self.webui_server.server_address  # In case we use automatic assignment
             self.webui_token = ""
-            self.webui_url = f"http://{self.webui_listen[0]}:{self.webui_listen[1]}/" # "?token={self.webui_token}"
+            self.webui_url = f"http://{self.webui_listen[0]}:{self.webui_listen[1]}/?token={self.webui_token}"
             logging.info(f"webui running at {self.webui_url}")
             self.webui_server.serve_forever()
         except Exception as e:
@@ -709,7 +709,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         if type(content) is str:
             segments = []
-            path = PurePosixPath(urllib.parse.unquote(self.path))
+            path = urllib.parse.unquote(self.path.split("?")[0])
+            path = PurePosixPath(path)
             while str(path) != "/":
                 segments.append(f"<a href='{path}'>{path.name}</a>")
                 path = path.parent
@@ -731,7 +732,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             (r"^$", self.route_home),  # list profiles
         ]
 
-        path = urllib.parse.unquote(self.path).strip("/")
+        path = urllib.parse.unquote(self.path.split("?")[0])
+        path = path.strip("/")
 
         for route_path, route_action in routes:
             if m := re.match(route_path, path):

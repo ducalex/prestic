@@ -1,5 +1,5 @@
 # Prestic
-Prestic is a profile manager and task scheduler for [restic](https://restic.net/). It works on all 
+Prestic is a profile manager and task scheduler for [restic](https://restic.net/). It works on all
 operating systems supported by restic but GUI and keyring functionality may vary by platform.
 
 ![Screenshot](https://github.com/ducalex/prestic/raw/master/screenshot.png)
@@ -13,7 +13,7 @@ Python 3.6+ and [pip](https://pip.pypa.io/en/stable/installing/) are required. T
 _Note: On Ubuntu you need to [add ~/.local/bin to your path](https://bugs.launchpad.net/ubuntu/+source/bash/+bug/1588562)
  if needed and run `sudo apt install gir1.2-appindicator3-0.1` for the gui to work._
 
-_Note: If you prefer you can also directly download `prestic.py` and put it somewhere in your PATH 
+_Note: If you prefer you can also directly download `prestic.py` and put it somewhere in your PATH
  (it is standalone)._
 
 
@@ -29,21 +29,21 @@ _Note: If you prefer you can also directly download `prestic.py` and put it some
 - Start scheduler only: `prestic --service`
 
 ## Keyring
-The keyring allows you to let your operating system store repository passwords encrypted in your 
+The keyring allows you to let your operating system store repository passwords encrypted in your
 user profile. This is the best password method if it is available to you.
 
-To use, add `password-keyring = <name>` to your prestic profile, where `<name>` can be anything you 
-want to identify that password. Then to set a password run the following command: 
+To use, add `password-keyring = <name>` to your prestic profile, where `<name>` can be anything you
+want to identify that password. Then to set a password run the following command:
 `prestic --keyring set <name>`.
 
 
 # Configuration file
-Configuration is stored in $HOME/.prestic/config.ini. The file consists of profile blocks. You can use a 
-single block or split in multiple blocks through inheritance. For example one profile could contain 
+Configuration is stored in $HOME/.prestic/config.ini. The file consists of profile blocks. You can use a
+single block or split in multiple blocks through inheritance. For example one profile could contain
 the repository configuration and then another one inherits from it and adds the backup command.
 
-Lists can span multiple lines, as long as they are indented deeper than the first line of the value. 
- 
+Lists can span multiple lines, as long as they are indented deeper than the first line of the value.
+
 ````ini
 # default is the profile used when no -p is given (it is optional)
 [default]
@@ -76,8 +76,6 @@ password-file =
 password-command =
 # (string) repository password (retrieve from OS keyring/locker)
 password-keyring =
-# (string) ID of key to try decrypting first, before other keys
-key-hint =
 # (int) limits downloads to a maximum rate in KiB/s
 limit-download =
 # (int) limits uploads to a maximum rate in KiB/s
@@ -89,15 +87,11 @@ command =
 # (list) restic arguments for default command
 args =
 # (int) be verbose (specify level 0-3)
-verbose = 
+verbose =
 # (regex) ignore lines matching this expression when writing log files
 log-filter = ^unchanged\s/
 # (string) set the cache directory
-cache-dir = 
-# (bool) do not use the local cache
-no-cache = false
-# (bool) do not lock the repo
-no-lock = false
+cache-dir =
 
 # (string) environment variables can be set:
 env.AWS_ACCESS_KEY_ID = VALUE

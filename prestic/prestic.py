@@ -59,7 +59,6 @@ class Profile:
         ("inherit", "list", None, []),
         ("description", "str", None, "no description"),
         ("repository", "str", "flag.repo", None),
-        ("repository-file", "str", "flag.repository-file", None),
         ("password", "str", "env.RESTIC_PASSWORD", None),
         ("password-command", "str", "env.RESTIC_PASSWORD_COMMAND", None),
         ("password-file", "str", "env.RESTIC_PASSWORD_FILE", None),
@@ -75,11 +74,8 @@ class Profile:
         ("limit-upload", "size", None, None),
         ("limit-download", "size", None, None),
         ("verbose", "int", "flag.verbose", None),
-        ("no-cache", "bool", "flag.no-cache", None),
-        ("no-lock", "bool", "flag.no-lock", None),
         ("option", "list", "flag.option", None),
         ("cache-dir", "str", "env.RESTIC_CACHE_DIR", None),
-        ("key-hint", "str", "env.RESTIC_KEY_HINT", None),
     ]
     # Break down _options for easier access
     _keymap = {key: remap or key for key, datatype, remap, default in _options}
@@ -162,12 +158,6 @@ class Profile:
     def set_last_run(self, last_run=None):
         self.last_run = last_run or datetime.now()
         self.next_run = self.find_next_run(self.last_run)
-
-    def is_pending(self):
-        return self.next_run and self.next_run <= datetime.now()
-
-    def is_runnable(self):
-        return self.command and (self["repository"] or self["repository-file"])
 
     def get_command(self, cmd_args=[]):
         args = [*self["executable"]]
@@ -255,6 +245,7 @@ class BaseHandler:
             "default": Profile("default"),
             **{k: Profile(k, dict(config[k])) for k in config.sections()},
         }
+        WebRequestHandler.profiles = self.profiles # Temp hack :()
 
         # Process profile inheritance
         inherits = True
@@ -279,7 +270,7 @@ class BaseHandler:
                 profile.inherit(parent)
                 profile["inherit"].pop(0)
 
-        self.tasks = [t for t in self.profiles.values() if t.is_runnable()]
+        self.tasks = [t for t in self.profiles.values() if t.command and t.repository]
         self.state = status
 
         # Setup task status
@@ -307,8 +298,8 @@ class BaseHandler:
     def dump_profiles(self):
         print(f"\nAvailable profiles:")
         for name, profile in self.profiles.items():
-            if repository := profile["repository"] or profile["repository-file"] or None:
-                print(f"    > {name} ({profile.description}) [{repository}] {' '.join(profile.command)}")
+            if profile.repository:
+                print(f"    > {name} ({profile.description}) [{profile.repository}] {' '.join(profile.command)}")
 
     def run(self, profile=None, args=[]):
         logging.info(f"running {args} on {profile}!")
@@ -323,12 +314,21 @@ class ServiceHandler(BaseHandler):
     """Run in service mode (task scheduler) and output to log files"""
 
     def set_status(self, message, busy=False):
+        if self.gui and message != self.status:
+            self.gui.title = "Prestic backup manager\n" + (message or "idle")
+            icon = self.icons["busy" if busy else "norm"]
+            if self.gui.icon is not icon:
+                self.gui.icon = icon
+            # This can cause issues if the menu is currently open but there is no way to know if it is...
+            self.gui.update_menu()
         if message != self.status:
             logging.info(f"status: {message}")
             self.status = message
 
     def notify(self, message, title=None):
-        pass
+        if self.gui and self.gui.HAS_NOTIFICATION:
+            self.gui.notify(message, f"{PROG_NAME}: {title}" if title else PROG_NAME)
+            time.sleep(5)  # 0.5s needed for stability, rest to give time for reading
 
     def proc_scheduler(self):
         # TO DO: Handle missed tasks more gracefully (ie computer sleep). We shouldn't run a
@@ -344,7 +344,7 @@ class ServiceHandler(BaseHandler):
                 for task in self.tasks:
                     if not task.next_run:
                         continue
-                    if task.is_pending():  # or 'backup' in task['command']:
+                    elif task.next_run <= datetime.now():
                         self.run_task(task)
                     if not next_task:
                         next_task = task
@@ -365,11 +365,9 @@ class ServiceHandler(BaseHandler):
             time.sleep(min(sleep_time, 10))
 
     def proc_webui(self):
-        # TO DO: Stop the web server after a period of inactivity (to release memory but also for security)
         time.sleep(1)  # Wait for the gui to come up so we can show errors
         try:
-            # WebRequestHandler.service = self
-            WebRequestHandler.profiles = self.profiles
+            # TO DO: Stop the web server after a period of inactivity (to release memory but also for security)
             self.webui_server = TCPServer(self.webui_listen, WebRequestHandler)
             self.webui_listen = self.webui_server.server_address  # In case we use automatic assignment
             self.webui_token = ""
@@ -412,7 +410,7 @@ class ServiceHandler(BaseHandler):
 
             self.save_state(task.name, {"pid": proc.pid})
 
-            task_log(f"Repository: {task['repository'] or task['repository-file']}")
+            task_log(f"Repository: {task.repository}")
             task_log(f"Command line: {' '.join(shlex.quote(s) for s in proc.args)}")
             task_log(f"Restic output:\n ")
 
@@ -461,6 +459,7 @@ class ServiceHandler(BaseHandler):
         self.webui_url = None
         self.running = True
         self.status = None
+        self.gui = None
 
         self.save_state("__prestic__", {"pid": os.getpid()})
         self.set_status("service started")
@@ -468,40 +467,6 @@ class ServiceHandler(BaseHandler):
         Thread(target=self.proc_scheduler, name="scheduler").start()
         Thread(target=self.proc_webui, name="webui").start()
 
-        if type(self) is ServiceHandler:
-            while self.running:
-                time.sleep(60)
-
-    def stop(self, rc=0):
-        logging.info("shutting down...")
-        try:
-            self.running = False
-            if self.webui_server:
-                self.webui_server.shutdown()
-        finally:
-            os._exit(rc)
-
-
-class TrayIconHandler(ServiceHandler):
-    """Show a tray icon when running in service mode (task scheduler)"""
-
-    def set_status(self, message, busy=False):
-        if message != self.status:
-            self.gui.title = "Prestic backup manager\n" + (message or "idle")
-            icon = self.icons["busy" if busy else "norm"]
-            if self.gui.icon is not icon:
-                self.gui.icon = icon
-            # This can cause issues if the menu is currently open
-            # but there is no way to know if it is...
-            self.gui.update_menu()
-        super().set_status(message, busy)
-
-    def notify(self, message, title=None):
-        if self.gui.HAS_NOTIFICATION:
-            self.gui.notify(message, f"{PROG_NAME}: {title}" if title else PROG_NAME)
-            time.sleep(5)  # 0.5s needed for stability, rest to give time for reading
-
-    def run(self, profile, args=[]):
         try:
             icon = Image.open(BytesIO(b64decode(PROG_ICON))).convert("RGBA")
             self.icons = {
@@ -543,19 +508,28 @@ class TrayIconHandler(ServiceHandler):
                     pystray.MenuItem("Tasks", pystray.Menu(tasks_menu)),
                     pystray.MenuItem("Open web interface", lambda: os_open_url(self.webui_url)),
                     pystray.MenuItem("Open prestic folder", lambda: os_open_url(PROG_HOME)),
-                    pystray.MenuItem("Reload config", lambda: (self.load_config())),
+                    pystray.MenuItem("Reload config", lambda: self.load_config()),
                     pystray.MenuItem("Quit", lambda: self.stop()),
                 ),
             )
-            super().run(profile, args)
             self.gui.run()
         except Exception as e:
             logging.warning("pystray (gui) couldn't be initialized...")
             logging.warning(f"proc_gui error: {type(e).__name__} '{e}'")
 
+        while self.running:
+            time.sleep(60)
+
     def stop(self, rc=0):
-        self.gui.visible = False
-        super().stop(rc)
+        logging.info("shutting down...")
+        try:
+            self.running = False
+            if self.gui:
+                self.gui.visible = False
+            if self.webui_server:
+                self.webui_server.shutdown()
+        finally:
+            os._exit(rc)
 
 
 class KeyringHandler(BaseHandler):
@@ -636,7 +610,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
     def route_home(self):
         table = []
         for p in self.profiles.values():
-            if p["repository"] or p["repository-file"]:
+            if p["repository"]:
                 browse_links = f"<a href='/'>manage</a> | <a href='/{p['name']}'>logs</a> | <a href='/{p['name']}'>snapshots</a>"
                 table.append([p["name"], p["description"], p["repository"], browse_links])
         header = f"<h3>Service status: Idle</h3>"
@@ -785,16 +759,13 @@ def main(argv=None):
     parser.add_argument("-c", "--config", default=None, help="config file")
     parser.add_argument("-p", "--profile", default="default", help="profile to use")
     parser.add_argument("--service", const=True, action="store_const", help="start service")
-    parser.add_argument("--gui", const=True, action="store_const", help="start service")
     parser.add_argument("--keyring", const=True, action="store_const", help="keyring management")
     parser.add_argument("command", nargs="...", help="restic command to run...")
     args = parser.parse_args(argv)
 
     logging.basicConfig(format="[%(levelname)s] %(message)s", level=logging.INFO)
 
-    if args.gui:
-        handler = TrayIconHandler(args.config)
-    elif args.service:
+    if args.service:
         handler = ServiceHandler(args.config)
     elif args.keyring:
         handler = KeyringHandler(args.config)
@@ -811,7 +782,7 @@ def gui():
     # Fixes some issues when invoked by pythonw.exe (but we should use .prestic/stderr.txt I suppose)
     sys.stdout = sys.stdout or open(os.devnull, "w")
     sys.stderr = sys.stderr or open(os.devnull, "w")
-    main([*sys.argv[1:], "--gui"])
+    main([*sys.argv[1:], "--service"])
 
 
 if __name__ == "__main__":

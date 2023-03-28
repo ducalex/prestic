@@ -609,10 +609,11 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
     def route_home(self):
         table = []
+        repos = []
         for p in self.profiles.values():
-            if p["repository"]:
-                browse_links = f"<a href='/'>manage</a> | <a href='/{p['name']}'>logs</a> | <a href='/{p['name']}'>snapshots</a>"
-                table.append([p["name"], p["description"], p["repository"], browse_links])
+            if p["repository"] and p["repository"] not in repos:
+                table.append([p["name"], p["description"], p["repository"], f"<a href='/{p['name']}'>snapshots</a>"])
+                repos.append(p["repository"])
         header = f"<h3>Service status: Idle</h3>"
         return (200, header + self.gen_table(table, ["Name", "Description", "Repository", "Actions"]))
 
@@ -787,5 +788,3 @@ def gui():
 
 if __name__ == "__main__":
     main()
-
-# TO DO: Icon should become red until a user acknowledges it when an error occurs in a task
